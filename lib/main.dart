@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:android_intent_plus/android_intent.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import 'package:csv/csv.dart';
+import 'package:share_plus/share_plus.dart';
+
+import 'database_helper.dart';
 
 void main() {
   runApp(const DataVerifyApp());
@@ -83,14 +88,74 @@ class _DashboardPageState extends State<DashboardPage> {
     _fetchAllData();
   }
 
+  // --- KRİTİK GÜNCELLEME: VERİ TABANI VE GEÇMİŞ VERİ AKTARIMI ---
   Future<void> _fetchAllData() async {
     setState(() => _isLoading = true);
     try {
       final Map<dynamic, dynamic> summary = await platform.invokeMethod('getAllUsageData');
       final List<dynamic> usageList = await platform.invokeMethod('getAppUsageList', {'period': _selectedPeriod});
-      setState(() { _allUsageSummary = summary; _appUsageList = usageList; });
-    } catch (e) { debugPrint("Hata: $e"); }
-    finally { setState(() => _isLoading = false); }
+
+      setState(() {
+        _allUsageSummary = summary;
+        _appUsageList = usageList;
+      });
+
+      // 1. Veritabanındaki satır sayısını kontrol et
+      final existingData = await DatabaseHelper.instance.queryAllRows();
+
+      // 2. Eğer veritabanında 2'den az satır varsa (geçmiş aktarılmamış demektir)
+      // Bu, sadece bugünün kaydı olsa bile geçmişi zorla çeker.
+      if (existingData.length < 2) {
+        debugPrint("Veritabanı eksik görünüyor, geçmiş veriler zorla aktarılıyor...");
+        final List<dynamic> monthlyHistory = await platform.invokeMethod('getMonthlyDailyUsage');
+
+        for (var day in monthlyHistory) {
+          final now = DateTime.now();
+          // Kotlin'den gelen "01.04" formatını parçalıyoruz
+          final parts = (day['date'] as String).split('.');
+
+          if (parts.length == 2) {
+            // "01", "04" gibi kısımları alıp 2026-04-01 formatına getiriyoruz
+            final String dayFormatted = parts[0].padLeft(2, '0');
+            final String monthFormatted = parts[1].padLeft(2, '0');
+            final dateStr = "${now.year}-$monthFormatted-$dayFormatted";
+
+            await DatabaseHelper.instance.insertOrUpdate({
+              'date': dateStr,
+              'mobile_mb': day['usageMB'] ?? 0.0,
+              'wifi_mb': 0.0,
+              'day_of_week': _getDayOfWeekFromDate(dateStr),
+            });
+          }
+        }
+      }
+
+      // 3. Her durumda bugünün verisini en güncel haliyle kaydet/güncelle
+      final now = DateTime.now();
+      final String todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+
+      await DatabaseHelper.instance.insertOrUpdate({
+        'date': todayStr,
+        'mobile_mb': _allUsageSummary['1d_mobile'] ?? 0.0,
+        'wifi_mb': _allUsageSummary['1d_wifi'] ?? 0.0,
+        'day_of_week': now.weekday,
+      });
+
+      debugPrint("Senkronizasyon tamamlandı.");
+
+    } catch (e) {
+      debugPrint("Hata: $e");
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  int _getDayOfWeekFromDate(String dateStr) {
+    try {
+      return DateTime.parse(dateStr).weekday;
+    } catch (_) {
+      return 1;
+    }
   }
 
   @override
@@ -231,18 +296,15 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Widget _buildPeriodSelector() {
     final periods = {'1h': '1 Saat', '1d': '1 Gün', '1w': '1 Hafta', '1m': '1 Ay'};
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: periods.entries.map((e) => ChoiceChip(
-          label: Text(e.value),
-          selected: _selectedPeriod == e.key,
-          onSelected: (val) { if(val) { setState(()=> _selectedPeriod = e.key); _fetchAllData(); } },
-          selectedColor: Colors.indigo.shade100,
-          labelStyle: TextStyle(color: _selectedPeriod == e.key ? Colors.indigo : Colors.black87),
-        )).toList(),
-      ),
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: periods.entries.map((e) => ChoiceChip(
+        label: Text(e.value),
+        selected: _selectedPeriod == e.key,
+        onSelected: (val) { if(val) { setState(()=> _selectedPeriod = e.key); _fetchAllData(); } },
+        selectedColor: Colors.indigo.shade100,
+        labelStyle: TextStyle(color: _selectedPeriod == e.key ? Colors.indigo : Colors.black87),
+      )).toList(),
     );
   }
 
@@ -291,11 +353,49 @@ class _StatisticsPageState extends State<StatisticsPage> {
     finally { setState(() => _isLoading = false); }
   }
 
+  Future<void> _exportCSV() async {
+    try {
+      final List<Map<String, dynamic>> rows = await DatabaseHelper.instance.queryAllRows();
+      if (rows.isEmpty) {
+        if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Henüz kaydedilmiş veri yok.")));
+        return;
+      }
+
+      List<List<dynamic>> csvData = [
+        ["Date", "Mobile_MB", "WiFi_MB", "DayOfWeek"],
+        ...rows.map((row) => [row['date'], row['mobile_mb'], row['wifi_mb'], row['day_of_week']])
+      ];
+
+      String csvString = const ListToCsvConverter().convert(csvData);
+      final directory = await getApplicationDocumentsDirectory();
+      final path = "${directory.path}/usage_data.csv";
+      final file = File(path);
+      await file.writeAsString(csvString);
+
+      await Share.shareXFiles([XFile(path)], text: 'DataVerify Eğitim Verisi');
+    } catch (e) {
+      debugPrint("Export hatası: $e");
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-      appBar: AppBar(title: const Text('30 Günlük Analiz')),
+      appBar: AppBar(
+        title: const Text('30 Günlük Analiz'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.file_download_outlined),
+            onPressed: _exportCSV,
+            tooltip: "Veriyi Dışa Aktar",
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            onPressed: _isLoading ? null : _fetchMonthlyData,
+          ),
+        ],
+      ),
       body: RefreshIndicator(
         onRefresh: _fetchMonthlyData,
         child: _isLoading
