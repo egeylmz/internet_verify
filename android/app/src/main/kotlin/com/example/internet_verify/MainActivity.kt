@@ -6,6 +6,11 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
+import java.io.ByteArrayOutputStream
 import android.os.Bundle
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
@@ -40,6 +45,15 @@ class MainActivity: FlutterActivity() {
                 "getMonthlyDailyUsage" -> {
                     result.success(getMonthlyDailyUsage())
                 }
+
+                "checkPermission" -> {
+                    result.success(checkUsageStatsPermission())
+                }
+                "openSettings" -> {
+                    openUsageStatsSettings()
+                    result.success(true)
+                }
+
                 else -> result.notImplemented()
             }
         }
@@ -89,15 +103,35 @@ class MainActivity: FlutterActivity() {
         val networkStatsManager = getSystemService(Context.NETWORK_STATS_SERVICE) as NetworkStatsManager
         val pm = packageManager
 
-        // 1. Cihazdaki tüm yüklü uygulamaları bir kerede tara ve haritala (Cache)
         val installedApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-        val appMap = mutableMapOf<Int, Pair<String, String>>() // UID -> Pair(İsim, PaketAdı)
+        val appMap = mutableMapOf<Int, Triple<String, String, ByteArray?>>()
 
         for (appInfo in installedApps) {
             val label = pm.getApplicationLabel(appInfo).toString()
             val packageName = appInfo.packageName
-            appMap[appInfo.uid] = Pair(label, packageName)
+
+            // İKON ÇEKME İŞLEMİ (Burayı eklemezsen Triple hatası devam eder)
+            var iconBytes: ByteArray? = null
+            try {
+                val icon = pm.getApplicationIcon(appInfo)
+                val bitmap = if (icon is BitmapDrawable) {
+                    icon.bitmap
+                } else {
+                    val b = Bitmap.createBitmap(icon.intrinsicWidth, icon.intrinsicHeight, Bitmap.Config.ARGB_8888)
+                    val canvas = Canvas(b)
+                    icon.setBounds(0, 0, canvas.width, canvas.height)
+                    icon.draw(canvas)
+                    b
+                }
+                val stream = ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.PNG, 80, stream)
+                iconBytes = stream.toByteArray()
+            } catch (e: Exception) { }
+
+            // Hata veren satırı şu şekilde düzeltiyoruz:
+            appMap[appInfo.uid] = Triple(label, packageName, iconBytes)
         }
+
 
         try {
             val stats = networkStatsManager.querySummary(ConnectivityManager.TYPE_MOBILE, null, getStartTime(period), System.currentTimeMillis())
@@ -123,15 +157,33 @@ class MainActivity: FlutterActivity() {
 
                     val finalPackageName: String = appData?.second ?: "system_uid_$uid"
 
-                    usageList.add(mapOf(
-                        "appName" to finalAppName,
-                        "packageName" to finalPackageName,
-                        "usageMB" to bytes / 1048576.0
-                    ))
+                    if (appData != null) {
+                        usageList.add(mapOf(
+                            "appName" to appData.first,
+                            "packageName" to appData.second,
+                            "usageMB" to bytes / 1048576.0,
+                            "iconBytes" to (appData.third ?: ByteArray(0)) // Flutter'a ikonları gönderen kritik satır
+                        ))
+                    }
                 }
             }
         } catch (e: Exception) { }
 
         return usageList.sortedByDescending { it["usageMB"] as Double }
+    }
+
+    private fun checkUsageStatsPermission(): Boolean {
+        val appOps = getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
+        val mode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            appOps.unsafeCheckOpNoThrow(android.app.AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName)
+        } else {
+            appOps.checkOpNoThrow(android.app.AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName)
+        }
+        return mode == android.app.AppOpsManager.MODE_ALLOWED
+    }
+
+    private fun openUsageStatsSettings() {
+        val intent = android.content.Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)
+        startActivity(intent)
     }
 }

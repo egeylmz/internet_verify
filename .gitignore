@@ -43,3 +43,27 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Android build and cache
+.gradle/
+build/
+android/.gradle/
+android/app/build/
+*.keystore
+*.jks
+*.java
+*.xml
+*.webp
+*.bin
+*.jar
+*.kotlin_module
+*.kt
+*.marker
+*.lock
+*.png
+*.aidl
+*.TAG
+*.receipt
+*.kts
+*.bat
+/android
