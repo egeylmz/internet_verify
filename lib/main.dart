@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:csv/csv.dart';
 import 'package:share_plus/share_plus.dart';
 import 'database_helper.dart';
+import 'prediction_service.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -144,34 +145,32 @@ class _DashboardPageState extends State<DashboardPage> {
         _appUsageList = usageList;
       });
 
-      // 1. Veritabanındaki satır sayısını kontrol et
-      final existingData = await DatabaseHelper.instance.queryAllRows();
+      // 1. Veritabanını kontrol et: satır sayısı az VEYA verinin büyük çoğunluğu 0 ise yeniden import et
+      final existingRows = await DatabaseHelper.instance.queryLastNDays(90);
+      final rowCount = existingRows.length;
+      final nonZeroCount = existingRows
+          .where((r) => ((r['mobile_mb'] as num?) ?? 0) > 0.0)
+          .length;
+      final needsImport = rowCount < 60 || nonZeroCount < 3;
 
-      // 2. Eğer veritabanında 2'den az satır varsa (geçmiş aktarılmamış demektir)
-      // Bu, sadece bugünün kaydı olsa bile geçmişi zorla çeker.
-      if (existingData.length < 2) {
-        debugPrint("Veritabanı eksik görünüyor, geçmiş veriler zorla aktarılıyor...");
-        final List<dynamic> monthlyHistory = await platform.invokeMethod('getMonthlyDailyUsage');
+      if (needsImport) {
+        debugPrint("Veritabanında $rowCount satır var, 90 günlük geçmiş import ediliyor...");
+        final List<dynamic> history = await platform.invokeMethod(
+          'getHistoricalDailyUsage',
+          {'days': 90},
+        );
 
-        for (var day in monthlyHistory) {
-          final now = DateTime.now();
-          // Kotlin'den gelen "01.04" formatını parçalıyoruz
-          final parts = (day['date'] as String).split('.');
-
-          if (parts.length == 2) {
-            // "01", "04" gibi kısımları alıp 2026-04-01 formatına getiriyoruz
-            final String dayFormatted = parts[0].padLeft(2, '0');
-            final String monthFormatted = parts[1].padLeft(2, '0');
-            final dateStr = "${now.year}-$monthFormatted-$dayFormatted";
-
-            await DatabaseHelper.instance.insertOrUpdate({
-              'date': dateStr,
-              'mobile_mb': day['usageMB'] ?? 0.0,
-              'wifi_mb': 0.0,
-              'day_of_week': _getDayOfWeekFromDate(dateStr),
-            });
-          }
+        for (var day in history) {
+          // Kotlin'den gelen format: "yyyy-MM-dd" — doğrudan kullanıyoruz
+          final String dateStr = day['date'] as String;
+          await DatabaseHelper.instance.insertOrUpdate({
+            'date': dateStr,
+            'mobile_mb': (day['mobileMB'] as num?)?.toDouble() ?? 0.0,
+            'wifi_mb': (day['wifiMB'] as num?)?.toDouble() ?? 0.0,
+            'day_of_week': _getDayOfWeekFromDate(dateStr),
+          });
         }
+        debugPrint("90 günlük geçmiş import tamamlandı.");
       }
 
       final now = DateTime.now();
@@ -438,31 +437,33 @@ class _StatisticsPageState extends State<StatisticsPage> {
     setState(() => _isLoading = true);
 
     try {
-      final List<Map<String, dynamic>> allRows = await DatabaseHelper.instance.queryAllRows();
+      // Son 90 günü çek; veritabanındaki mevcut kayıtlarla birleştir
+      final List<Map<String, dynamic>> dbRows =
+          await DatabaseHelper.instance.queryLastNDays(90);
+
+      // Map'e al: date -> mobileMB
+      final Map<String, double> usageByDate = {
+        for (var r in dbRows)
+          r['date'] as String: (r['mobile_mb'] as num?)?.toDouble() ?? 0.0
+      };
 
       DateTime now = DateTime.now();
-      List<Map<String, dynamic>> last30Days = [];
+      List<Map<String, dynamic>> last90Days = [];
 
-      for (int i = 29; i >= 0; i--) {
+      for (int i = 89; i >= 0; i--) {
         DateTime targetDate = now.subtract(Duration(days: i));
-        String dateKey = "${targetDate.year}-${targetDate.month.toString().padLeft(2, '0')}-${targetDate.day.toString().padLeft(2, '0')}";
+        String dateKey =
+            "${targetDate.year}-${targetDate.month.toString().padLeft(2, '0')}-${targetDate.day.toString().padLeft(2, '0')}";
 
-        var existingRows = allRows.where((row) => row['date'] == dateKey).toList();
-        double usage = 0.0;
-
-        if (existingRows.isNotEmpty) {
-          usage = (existingRows.first['mobile_mb'] as num).toDouble();
-        }
-
-        last30Days.add({
+        last90Days.add({
           'date': dateKey,
-          'usageMB': usage,
+          'usageMB': usageByDate[dateKey] ?? 0.0,
         });
       }
 
       if (mounted) {
         setState(() {
-          _monthlyData = last30Days;
+          _monthlyData = last90Days;
         });
       }
     } catch (e) {
@@ -481,8 +482,14 @@ class _StatisticsPageState extends State<StatisticsPage> {
       }
 
       List<List<dynamic>> csvData = [
-        ["Date", "Mobile_MB", "WiFi_MB", "DayOfWeek"],
-        ...rows.map((row) => [row['date'], row['mobile_mb'], row['wifi_mb'], row['day_of_week']])
+        ["Date", "Mobile_MB", "WiFi_MB", "Operator_MB", "DayOfWeek"],
+        ...rows.map((row) => [
+              row['date'],
+              row['mobile_mb'],
+              row['wifi_mb'],
+              row['operator_mb'] ?? '',
+              row['day_of_week'],
+            ])
       ];
 
       String csvString = const ListToCsvConverter().convert(csvData);
@@ -502,7 +509,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
-        title: const Text('30 Günlük Analiz'),
+        title: const Text('90 Günlük Analiz'),
         actions: [
           IconButton(icon: const Icon(Icons.file_download_outlined), onPressed: _exportCSV),
           IconButton(icon: const Icon(Icons.refresh_rounded), onPressed: _isLoading ? null : _fetchMonthlyData),
@@ -588,7 +595,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
                   BarChartRodData(
                     toY: (e.value['usageMB'] as double),
                     color: _getBarColor(e.key),
-                    width: 5,
+                    width: 3,
                     borderRadius: const BorderRadius.vertical(top: Radius.circular(2)),
                   )
                 ],
@@ -744,15 +751,27 @@ class _VerifyPageState extends State<VerifyPage> {
 
   Future<void> _calculateDrift(double pdfUsage, DateTime start, DateTime end) async {
     try {
-      final List<Map<String, dynamic>> allRows = await DatabaseHelper.instance.queryAllRows();
+      final String startStr =
+          "${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')}";
+      final String endStr =
+          "${end.year}-${end.month.toString().padLeft(2, '0')}-${end.day.toString().padLeft(2, '0')}";
+
+      final List<Map<String, dynamic>> rows =
+          await DatabaseHelper.instance.queryByDateRange(startStr, endStr);
       double deviceTotalMb = 0;
 
-      for (var row in allRows) {
-        DateTime rowDate = DateTime.parse(row['date']);
-        if ((rowDate.isAfter(start) || _isSameDay(rowDate, start)) &&
-            (rowDate.isBefore(end) || _isSameDay(rowDate, end))) {
-          deviceTotalMb += (row['mobile_mb'] as double? ?? 0.0);
-        }
+      for (var row in rows) {
+        deviceTotalMb += (row['mobile_mb'] as num?)?.toDouble() ?? 0.0;
+      }
+
+      // Operatör verisini gün sayısına bölerek her güne orantısal yaz
+      final int dayCount = rows.length > 0 ? rows.length : 1;
+      final double dailyOperatorMb = pdfUsage / dayCount;
+      for (var row in rows) {
+        await DatabaseHelper.instance.updateOperatorMb(
+          row['date'] as String,
+          dailyOperatorMb,
+        );
       }
 
       double drift = (pdfUsage > 0) ? ((deviceTotalMb - pdfUsage).abs() / pdfUsage) * 100 : 0;
@@ -928,14 +947,477 @@ class _VerifyPageState extends State<VerifyPage> {
   }
 }
 
-// --- SEKME 4: TARİFE ÖNERİSİ (AI) ---
-class SuggestionPage extends StatelessWidget {
+// --- SEKME 4: TAHMİN ---
+class SuggestionPage extends StatefulWidget {
   const SuggestionPage({super.key});
+  @override
+  State<SuggestionPage> createState() => _SuggestionPageState();
+}
+
+class _SuggestionPageState extends State<SuggestionPage> {
+  PackageInfo? _packageInfo;
+  PredictionResult? _prediction;
+  bool _isLoading = true;
+
+  // Paket girişi için controller'lar
+  final _quotaController   = TextEditingController();
+  final _billingController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  @override
+  void dispose() {
+    _quotaController.dispose();
+    _billingController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadData() async {
+    setState(() => _isLoading = true);
+    final pkgRow = await DatabaseHelper.instance.getPackageInfo();
+    if (pkgRow != null) {
+      final pkg = PackageInfo(
+        quotaMb:    (pkgRow['quota_mb']    as num).toDouble(),
+        billingDay: (pkgRow['billing_day'] as num).toInt(),
+      );
+      final history = await DatabaseHelper.instance.queryLastNDays(90);
+      final result  = PredictionService.predict(history, pkg);
+      setState(() {
+        _packageInfo = pkg;
+        _prediction  = result;
+      });
+    }
+    setState(() => _isLoading = false);
+  }
+
+  Future<void> _showPackageDialog({bool isEdit = false}) async {
+    if (isEdit && _packageInfo != null) {
+      _quotaController.text   = (_packageInfo!.quotaMb / 1024).toStringAsFixed(1);
+      _billingController.text = _packageInfo!.billingDay.toString();
+    } else {
+      _quotaController.clear();
+      _billingController.clear();
+    }
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(
+          left: 24, right: 24, top: 24,
+          bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Paket Bilgisi',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _quotaController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                labelText: 'Paket Boyutu',
+                suffixText: 'GB',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _billingController,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: 'Fatura Günü',
+                hintText: 'Her ayın kaçında yenileniyor? (1-31)',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.indigo,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                onPressed: () async {
+                  final gb  = double.tryParse(_quotaController.text.replaceAll(',', '.'));
+                  final day = int.tryParse(_billingController.text);
+                  if (gb == null || gb <= 0 || day == null || day < 1 || day > 31) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Lütfen geçerli değerler girin.')));
+                    return;
+                  }
+                  await DatabaseHelper.instance.savePackageInfo(
+                    quotaMb:    gb * 1024,
+                    billingDay: day,
+                  );
+                  if (mounted) Navigator.pop(ctx);
+                  await _loadData();
+                },
+                child: const Text('Kaydet', style: TextStyle(fontSize: 16)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Tarife Önerisi')),
-      body: const Center(child: Text('AI Destekli Öneriler Çok Yakında!')),
+      backgroundColor: Colors.grey[100],
+      appBar: AppBar(
+        title: const Text('Tahmin'),
+        actions: [
+          if (_packageInfo != null)
+            IconButton(
+              icon: const Icon(Icons.edit_rounded),
+              tooltip: 'Paket bilgisini düzenle',
+              onPressed: () => _showPackageDialog(isEdit: true),
+            ),
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            onPressed: _isLoading ? null : _loadData,
+          ),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _packageInfo == null
+              ? _buildSetupView()
+              : _buildPredictionView(),
+    );
+  }
+
+  // --- Paket bilgisi girilmemiş ---
+  Widget _buildSetupView() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.indigo.withOpacity(0.08),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.data_usage_rounded, size: 56, color: Colors.indigo),
+            ),
+            const SizedBox(height: 24),
+            const Text('Paket Bilgisi Gerekli',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            Text(
+              'Pakedinizin ne zaman biteceğini tahmin edebilmemiz için toplam paket boyutunuzu ve fatura gününüzü girin.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+            ),
+            const SizedBox(height: 32),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('Paket Bilgisi Gir'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.indigo,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              ),
+              onPressed: () => _showPackageDialog(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- Ana tahmin görünümü ---
+  Widget _buildPredictionView() {
+    final p = _prediction;
+    if (p == null) {
+      return const Center(child: Text('Tahmin için yeterli veri yok.'));
+    }
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          _buildQuotaCard(p),
+          const SizedBox(height: 12),
+          _buildPredictionCard(p),
+          const SizedBox(height: 12),
+          _buildDowChart(p),
+          const SizedBox(height: 12),
+          _buildTrendCard(p),
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+
+  // --- Kota kartı ---
+  Widget _buildQuotaCard(PredictionResult p) {
+    final usedGB  = p.usedMB  / 1024;
+    final quotaGB = p.quotaMB / 1024;
+    final remGB   = p.remainingMB / 1024;
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.sim_card_rounded, color: p.quotaColor, size: 20),
+                const SizedBox(width: 8),
+                const Text('Bu Dönem Kullanımı',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                const Spacer(),
+                Text('${usedGB.toStringAsFixed(1)} / ${quotaGB.toStringAsFixed(1)} GB',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+              ],
+            ),
+            const SizedBox(height: 14),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: p.usedPercent,
+                minHeight: 10,
+                backgroundColor: Colors.grey[200],
+                valueColor: AlwaysStoppedAnimation<Color>(p.quotaColor),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Kalan: ${remGB.toStringAsFixed(2)} GB',
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                Text('%${(p.usedPercent * 100).toStringAsFixed(0)} kullanıldı',
+                    style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- Ana tahmin kartı ---
+  Widget _buildPredictionCard(PredictionResult p) {
+    final months = ['', 'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
+                    'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
+    final d = p.estimatedExhaustionDate;
+    final dateStr = '${d.day} ${months[d.month]} ${d.year}';
+
+    Color urgencyColor;
+    String urgencyMsg;
+    IconData urgencyIcon;
+    if (p.daysRemaining <= 3) {
+      urgencyColor = Colors.red;
+      urgencyMsg   = 'Kritik — çok az kaldı!';
+      urgencyIcon  = Icons.warning_rounded;
+    } else if (p.daysRemaining <= 7) {
+      urgencyColor = Colors.orange;
+      urgencyMsg   = 'Dikkat — yakında bitiyor';
+      urgencyIcon  = Icons.info_rounded;
+    } else {
+      urgencyColor = Colors.indigo;
+      urgencyMsg   = 'Pakediniz yolunda görünüyor';
+      urgencyIcon  = Icons.check_circle_rounded;
+    }
+
+    return Card(
+      elevation: 0,
+      color: urgencyColor.withOpacity(0.07),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: BorderSide(color: urgencyColor.withOpacity(0.3))),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Icon(urgencyIcon, color: urgencyColor, size: 20),
+                const SizedBox(width: 8),
+                Text(urgencyMsg,
+                    style: TextStyle(color: urgencyColor, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            const SizedBox(height: 20),
+            Text(
+              '${p.daysRemaining}',
+              style: TextStyle(
+                  fontSize: 64,
+                  fontWeight: FontWeight.bold,
+                  color: urgencyColor,
+                  height: 1),
+            ),
+            Text('gün kaldı',
+                style: TextStyle(fontSize: 18, color: Colors.grey[700])),
+            const SizedBox(height: 8),
+            Text('Tahmini bitiş: $dateStr',
+                style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.speed_rounded, size: 16, color: Colors.grey[600]),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Günlük ortalama: ${(p.averageDailyMB / 1024).toStringAsFixed(2)} GB',
+                    style: TextStyle(fontSize: 13, color: Colors.grey[700]),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- Haftanın günü bar chart ---
+  Widget _buildDowChart(PredictionResult p) {
+    const days = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
+    final maxVal = p.dowAveragesMB.reduce((a, b) => a > b ? a : b);
+
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.bar_chart_rounded, color: Colors.indigo, size: 20),
+                SizedBox(width: 8),
+                Text('Günlük Ortalama Kullanım',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text('Haftanın günlerine göre',
+                style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 160,
+              child: BarChart(
+                BarChartData(
+                  alignment: BarChartAlignment.spaceAround,
+                  maxY: maxVal * 1.25,
+                  gridData: const FlGridData(show: false),
+                  borderData: FlBorderData(show: false),
+                  titlesData: FlTitlesData(
+                    leftTitles:   const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    topTitles:    const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    rightTitles:  const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        getTitlesWidget: (val, _) => Text(
+                          days[val.toInt()],
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ),
+                  ),
+                  barGroups: List.generate(7, (i) {
+                    final isWeekend = i >= 5;
+                    return BarChartGroupData(
+                      x: i,
+                      barRods: [
+                        BarChartRodData(
+                          toY: p.dowAveragesMB[i],
+                          color: isWeekend
+                              ? Colors.indigoAccent
+                              : Colors.indigo,
+                          width: 22,
+                          borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(6)),
+                          rodStackItems: [],
+                        ),
+                      ],
+                    );
+                  }),
+                  barTouchData: BarTouchData(
+                    touchTooltipData: BarTouchTooltipData(
+                      getTooltipItem: (group, _, rod, __) => BarTooltipItem(
+                        '${(rod.toY / 1024).toStringAsFixed(2)} GB',
+                        const TextStyle(color: Colors.white, fontSize: 12),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- Trend kartı ---
+  Widget _buildTrendCard(PredictionResult p) {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: p.trendColor.withOpacity(0.12),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(p.trendIcon, color: p.trendColor, size: 28),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Kullanım Trendi: ${p.trendLabel}',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                  const SizedBox(height: 4),
+                  Text(
+                    p.trendFactor > 1.0
+                        ? 'Son 14 günde kullanımınız önceki 14 güne göre %${((p.trendFactor - 1) * 100).toStringAsFixed(0)} arttı.'
+                        : p.trendFactor < 1.0
+                            ? 'Son 14 günde kullanımınız önceki 14 güne göre %${((1 - p.trendFactor) * 100).toStringAsFixed(0)} azaldı.'
+                            : 'Kullanımınız son dönemde istikrarlı seyrediyor.',
+                    style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

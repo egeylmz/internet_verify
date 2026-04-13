@@ -42,8 +42,9 @@ class MainActivity: FlutterActivity() {
                     val period = call.argument<String>("period") ?: "1d"
                     result.success(getAppUsageList(period))
                 }
-                "getMonthlyDailyUsage" -> {
-                    result.success(getMonthlyDailyUsage())
+                "getHistoricalDailyUsage" -> {
+                    val days = call.argument<Int>("days") ?: 90
+                    result.success(getHistoricalDailyUsage(days))
                 }
 
                 "checkPermission" -> {
@@ -78,23 +79,43 @@ class MainActivity: FlutterActivity() {
         } catch (e: Exception) { 0L }
     }
 
-    private fun getMonthlyDailyUsage(): List<Map<String, Any>> {
+    private fun getHistoricalDailyUsage(days: Int): List<Map<String, Any>> {
         val networkStatsManager = getSystemService(Context.NETWORK_STATS_SERVICE) as NetworkStatsManager
-        val dailyData = mutableListOf<Map<String, Any>>()
-        val sdf = SimpleDateFormat("dd.MM", Locale.getDefault())
-        for (i in 0 until 30) {
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        val now = System.currentTimeMillis()
+        val dayMs = 86400000L
+
+        // Kümülatif sorgular: bitiş HEP 'now' — dashboard ile aynı yöntem.
+        // cumMobile[i] = "son i gün" toplam mobil bayt (i=0 → 0 bayt)
+        val cumMobile = LongArray(days + 1)
+        val cumWifi   = LongArray(days + 1)
+
+        for (i in 1..days) {
+            val startTime = now - i * dayMs
+            cumMobile[i] = try {
+                val u = networkStatsManager.querySummaryForDevice(
+                    ConnectivityManager.TYPE_MOBILE, null, startTime, now)
+                u.rxBytes + u.txBytes
+            } catch (e: Exception) { cumMobile[i - 1] }
+
+            cumWifi[i] = try {
+                val u = networkStatsManager.querySummaryForDevice(
+                    ConnectivityManager.TYPE_WIFI, null, startTime, now)
+                u.rxBytes + u.txBytes
+            } catch (e: Exception) { cumWifi[i - 1] }
+        }
+
+        // Gün i kullanımı = cumulative[i+1] - cumulative[i]  (her zaman >= 0)
+        val result = mutableListOf<Map<String, Any>>()
+        for (i in 0 until days) {
             val cal = Calendar.getInstance()
             cal.add(Calendar.DAY_OF_YEAR, -i)
-            val end = if (i == 0) System.currentTimeMillis() else {
-                cal.set(Calendar.HOUR_OF_DAY, 23); cal.set(Calendar.MINUTE, 59); cal.timeInMillis
-            }
-            cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0); val start = cal.timeInMillis
-            try {
-                val usage = networkStatsManager.querySummaryForDevice(ConnectivityManager.TYPE_MOBILE, null, start, end)
-                dailyData.add(mapOf("date" to sdf.format(cal.time), "usageMB" to (usage.rxBytes + usage.txBytes) / 1048576.0))
-            } catch (e: Exception) { }
+            val dateStr = sdf.format(cal.time)
+            val mobileMB = (cumMobile[i + 1] - cumMobile[i]).coerceAtLeast(0L) / 1048576.0
+            val wifiMB   = (cumWifi[i + 1]   - cumWifi[i]).coerceAtLeast(0L)   / 1048576.0
+            result.add(mapOf("date" to dateStr, "mobileMB" to mobileMB, "wifiMB" to wifiMB))
         }
-        return dailyData
+        return result
     }
 
     // DİNAMİK EŞLEŞTİRME YAPAN YENİ FONKSİYON
