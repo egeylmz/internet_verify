@@ -642,14 +642,17 @@ class VerifyPage extends StatefulWidget {
 }
 
 class _VerifyPageState extends State<VerifyPage> {
-  // --- 1. & 2. MADDE: Başlık ve Statü Metinleri ---
   String _status = "Karşılaştırma için operatör PDF dökümanını yükleyin.";
   bool _isProcessing = false;
   Map<String, dynamic>? _resultData;
   double _driftPercent = 0;
   Color _driftColor = Colors.green;
+  static const Map<String, int> _monthMap = {
+    'ocak': 1, 'subat': 2, 'ubat': 2, 'mart': 3, 'nisan': 4,
+    'mayis': 5, 'haziran': 6, 'temmuz': 7, 'agustos': 8,
+    'eylul': 9, 'ekim': 10, 'kasim': 11, 'aralik': 12,
+  };
 
-  // --- 4. MADDE: Veri Birimi Dönüştürücü ---
   String _formatUsage(double totalMb) {
     int gb = totalMb ~/ 1024;
     int mb = (totalMb % 1024).toInt();
@@ -695,61 +698,83 @@ class _VerifyPageState extends State<VerifyPage> {
     }
   }
 
+  String _normalizeMonth(String raw) {
+    return raw
+        .toLowerCase()
+        .replaceAll('ş', 's').replaceAll('ı', 'i')
+        .replaceAll('ö', 'o').replaceAll('ü', 'u')
+        .replaceAll('ğ', 'g').replaceAll('ç', 'c')
+        .replaceAll('İ', 'i').replaceAll('Ş', 's');
+  }
+
+  int? _parseMonth(String rawMonth) {
+    final normalized = _normalizeMonth(rawMonth);
+    for (final entry in _monthMap.entries) {
+      if (normalized.contains(entry.key)) return entry.value;
+    }
+    return null;
+  }
+
   void _analyzeOperatorData(String rawText) {
     final RegExp dataRegExp = RegExp(
-      r"(\d{2})\s+([a-zA-ZşŞüÜçÇöÖıİ]+),?\s+(\d{2}:\d{2}).*?([\d.]+)\s+(Kb|Mb|Gb|Sn)",
+      r"(\d{2})\s+([a-zA-ZşŞüÜçÇöÖıİğĞ]+),?\s+(\d{2}:\d{2}).*?([\d.]+)\s+(Kb|Mb|Gb|Sn)",
       dotAll: true,
     );
 
-    final matches = dataRegExp.allMatches(rawText);
-    double totalPdfMb = 0;
-    DateTime? minDate;
-    DateTime? maxDate;
+    final List<Map<String, dynamic>> entries = [];
 
-    for (var match in matches) {
+    for (var match in dataRegExp.allMatches(rawText)) {
       try {
-        int day = int.parse(match.group(1)!);
-        String rawMonth = match.group(2)!.toLowerCase();
-        String timePart = match.group(3)!;
+        final int day = int.parse(match.group(1)!);
+        final int? month = _parseMonth(match.group(2)!);
+        if (month == null) continue;
 
-        int month = 3;
-        if (rawMonth.contains('mart')) {
-          month = 3;
-        } else if (rawMonth.contains('ubat') || rawMonth.contains('şubat')) {
-          month = 2;
-        } else if (rawMonth.contains('ocak')) {
-          month = 1;
-        }
+        final String timePart = match.group(3)!;
+        final double amount = double.tryParse(match.group(4) ?? '0') ?? 0;
+        final String unit = match.group(5) ?? 'Kb';
 
-        List<String> tParts = timePart.split(':');
-        DateTime currentMatchDate = DateTime(2026, month, day, int.parse(tParts[0]), int.parse(tParts[1]));
+        if (unit == 'Sn') continue;
 
-        double amount = double.tryParse(match.group(4) ?? "0") ?? 0;
-        String unit = match.group(5) ?? "Kb";
+        final List<String> tParts = timePart.split(':');
+        final DateTime dt = DateTime(2026, month, day, int.parse(tParts[0]), int.parse(tParts[1]));
 
-        if (unit != "Sn") {
-          if (minDate == null || currentMatchDate.isBefore(minDate)) minDate = currentMatchDate;
-          if (maxDate == null || currentMatchDate.isAfter(maxDate)) maxDate = currentMatchDate;
+        final double mb = unit == 'Kb'
+            ? amount / 1024
+            : unit == 'Gb'
+                ? amount * 1024
+                : amount;
 
-          if (unit == "Kb") {
-            totalPdfMb += (amount / 1024);
-          } else if (unit == "Gb") {
-            totalPdfMb += (amount * 1024);
-          } else {
-            totalPdfMb += amount;
-          }
-        }
-      } catch (e) { continue; }
+        entries.add({'date': dt, 'mb': mb});
+      } catch (_) { continue; }
     }
 
-    if (totalPdfMb > 0 && minDate != null) {
-      _calculateDrift(totalPdfMb, minDate, maxDate ?? minDate);
+    if (entries.isEmpty) {
+      setState(() => _status = "Eşleşme bulunamadı. PDF formatını kontrol edin.");
+      return;
+    }
+
+    final allDates = entries.map((e) => e['date'] as DateTime);
+    final periodStart = allDates.reduce((a, b) => a.isBefore(b) ? a : b);
+    final periodEnd   = allDates.reduce((a, b) => a.isAfter(b) ? a : b);
+
+    // Group operator sessions by date
+    final Map<String, double> dailyOperatorMb = {};
+    for (final entry in entries) {
+      final dt = entry['date'] as DateTime;
+      final key = "${dt.year}-${dt.month.toString().padLeft(2,'0')}-${dt.day.toString().padLeft(2,'0')}";
+      dailyOperatorMb[key] = (dailyOperatorMb[key] ?? 0.0) + (entry['mb'] as double);
+    }
+
+    final double totalPdfMb = dailyOperatorMb.values.fold(0.0, (s, v) => s + v);
+
+    if (totalPdfMb > 0) {
+      _calculateDrift(dailyOperatorMb, totalPdfMb, periodStart, periodEnd);
     } else {
-      setState(() => _status = "Eşleşme bulunamadı.");
+      setState(() => _status = "Eşleşme bulunamadı. PDF formatını kontrol edin.");
     }
   }
 
-  Future<void> _calculateDrift(double pdfUsage, DateTime start, DateTime end) async {
+  Future<void> _calculateDrift(Map<String, double> dailyOperatorMb, double totalPdfMb, DateTime start, DateTime end) async {
     try {
       final String startStr =
           "${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')}";
@@ -758,23 +783,34 @@ class _VerifyPageState extends State<VerifyPage> {
 
       final List<Map<String, dynamic>> rows =
           await DatabaseHelper.instance.queryByDateRange(startStr, endStr);
+
+      // Compare only on days where device has recorded data (tracking was active)
       double deviceTotalMb = 0;
+      double filteredOperatorMb = 0;
+      int activeDays = 0;
+      final int totalDays = rows.length;
 
       for (var row in rows) {
-        deviceTotalMb += (row['mobile_mb'] as num?)?.toDouble() ?? 0.0;
+        final double devMb = (row['mobile_mb'] as num?)?.toDouble() ?? 0.0;
+        final String dateKey = row['date'] as String;
+        final double opMb = dailyOperatorMb[dateKey] ?? 0.0;
+
+        // Write actual daily operator value to DB for statistics view
+        await DatabaseHelper.instance.updateOperatorMb(dateKey, opMb);
+
+        if (devMb > 0) {
+          deviceTotalMb += devMb;
+          filteredOperatorMb += opMb;
+          activeDays++;
+        }
       }
 
-      // Operatör verisini gün sayısına bölerek her güne orantısal yaz
-      final int dayCount = rows.length > 0 ? rows.length : 1;
-      final double dailyOperatorMb = pdfUsage / dayCount;
-      for (var row in rows) {
-        await DatabaseHelper.instance.updateOperatorMb(
-          row['date'] as String,
-          dailyOperatorMb,
-        );
-      }
+      // If no active days, fall back to full-period comparison
+      final double effectivePdfMb = activeDays > 0 ? filteredOperatorMb : totalPdfMb;
+      final double effectiveDeviceMb = activeDays > 0 ? deviceTotalMb : 0;
 
-      double drift = (pdfUsage > 0) ? ((deviceTotalMb - pdfUsage).abs() / pdfUsage) * 100 : 0;
+      double drift = (effectivePdfMb > 0) ? ((effectiveDeviceMb - effectivePdfMb).abs() / effectivePdfMb) * 100 : 0;
+      final double pdfUsage = effectivePdfMb;
 
       Color dColor = Colors.greenAccent.shade700;
       if (drift > 50) {
@@ -784,14 +820,18 @@ class _VerifyPageState extends State<VerifyPage> {
       }
 
       final List<String> monthNames = ["", "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
+      final String rangeStr = start.year == end.year
+          ? "${start.day} ${monthNames[start.month]} - ${end.day} ${monthNames[end.month]} ${end.year}"
+          : "${start.day} ${monthNames[start.month]} ${start.year} - ${end.day} ${monthNames[end.month]} ${end.year}";
 
       setState(() {
         _driftPercent = drift;
         _driftColor = dColor;
         _resultData = {
-          'range': "${start.day} ${monthNames[start.month]} - ${end.day} ${monthNames[end.month]} 2026",
+          'range': rangeStr,
           'operator': _formatUsage(pdfUsage),
-          'device': _formatUsage(deviceTotalMb),
+          'device': _formatUsage(effectiveDeviceMb),
+          'coverage': activeDays > 0 ? "$activeDays/$totalDays gün" : null,
         };
         _status = "Cihaz verisi operatör verisiyle karşılaştırıldı";
       });
@@ -877,6 +917,8 @@ class _VerifyPageState extends State<VerifyPage> {
               _buildModernRow(Icons.calendar_month_rounded, "Analiz Aralığı:", _resultData!['range'], Colors.blue),
               _buildModernRow(Icons.sensors_rounded, "Operatör Verisi:", _resultData!['operator'], Colors.deepPurple),
               _buildModernRow(Icons.phonelink_ring_rounded, "Cihaz Verisi:", _resultData!['device'], Colors.purple),
+              if (_resultData!['coverage'] != null)
+                _buildModernRow(Icons.date_range_rounded, "Takip Kapsamı:", _resultData!['coverage']!, Colors.teal),
             ],
 
             const SizedBox(height: 40),
