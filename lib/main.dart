@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'dart:math' as math;
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:csv/csv.dart';
@@ -11,6 +12,52 @@ import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 
+
+// Splash ekranında önceden çekilen veriyi tutan cache
+class _AppDataCache {
+  static Map<dynamic, dynamic>? summary;
+  static List<dynamic>? appList;
+}
+
+Future<void> _initializeAppData() async {
+  const platform = MethodChannel('com.example.internet_verify');
+  try {
+    final summary = await platform.invokeMethod('getAllUsageData');
+    final appList = await platform.invokeMethod('getAppUsageList', {'period': '1d'});
+
+    _AppDataCache.summary = summary;
+    _AppDataCache.appList = appList;
+
+    final existingRows = await DatabaseHelper.instance.queryLastNDays(90);
+    final rowCount = existingRows.length;
+    final nonZeroCount = existingRows.where((r) => ((r['mobile_mb'] as num?) ?? 0) > 0.0).length;
+
+    if (rowCount < 60 || nonZeroCount < 3) {
+      final List<dynamic> history = await platform.invokeMethod('getHistoricalDailyUsage', {'days': 90});
+      final rows = history.map<Map<String, dynamic>>((day) {
+        final String dateStr = day['date'] as String;
+        return {
+          'date': dateStr,
+          'mobile_mb': (day['mobileMB'] as num?)?.toDouble() ?? 0.0,
+          'wifi_mb': (day['wifiMB'] as num?)?.toDouble() ?? 0.0,
+          'day_of_week': DateTime.tryParse(dateStr)?.weekday ?? 1,
+        };
+      }).toList();
+      await DatabaseHelper.instance.batchInsertOrUpdate(rows);
+    }
+
+    final now = DateTime.now();
+    final todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+    await DatabaseHelper.instance.insertOrUpdate({
+      'date': todayStr,
+      'mobile_mb': (summary['1d_mobile'] as num?)?.toDouble() ?? 0.0,
+      'wifi_mb': (summary['1d_wifi'] as num?)?.toDouble() ?? 0.0,
+      'day_of_week': now.weekday,
+    });
+  } catch (e) {
+    debugPrint('Splash init hatası: $e');
+  }
+}
 
 void main() {
   runApp(const DataVerifyApp());
@@ -35,7 +82,62 @@ class DataVerifyApp extends StatelessWidget {
           iconTheme: IconThemeData(color: Colors.indigo),
         ),
       ),
-      home: const MainNavigation(),
+      home: const SplashScreen(),
+    );
+  }
+}
+
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen> {
+  @override
+  void initState() {
+    super.initState();
+    _start();
+  }
+
+  Future<void> _start() async {
+    // Veri çekme + minimum görünme süresi paralel çalışır
+    await Future.wait([
+      _initializeAppData(),
+      Future.delayed(const Duration(milliseconds: 1500)),
+    ]);
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        pageBuilder: (_, __, ___) => const MainNavigation(),
+        transitionsBuilder: (_, anim, __, child) =>
+            FadeTransition(opacity: anim, child: child),
+        transitionDuration: const Duration(milliseconds: 500),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF1C2551),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Image.asset('assets/icon/logo.png', width: 130, height: 130),
+            const SizedBox(height: 48),
+            const SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(
+                color: Colors.white54,
+                strokeWidth: 2.5,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -48,24 +150,57 @@ class MainNavigation extends StatefulWidget {
 
 class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
-  final List<Widget> _pages = [const DashboardPage(), const StatisticsPage(), const VerifyPage(), const SuggestionPage()];
+  final List<int> _history = [];
+
+  final List<Widget> _pages = [
+    const DashboardPage(),
+    const StatisticsPage(),
+    const VerifyPage(),
+    const SuggestionPage(),
+  ];
+
+  void _onTabTap(int index) {
+    if (index == _currentIndex) return;
+    setState(() {
+      _history.add(_currentIndex);
+      _currentIndex = index;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: IndexedStack(index: _currentIndex, children: _pages),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (index) => setState(() => _currentIndex = index),
-        selectedItemColor: Colors.indigo,
-        unselectedItemColor: Colors.grey,
-        type: BottomNavigationBarType.fixed,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'Özet'),
-          BottomNavigationBarItem(icon: Icon(Icons.auto_graph_rounded), label: 'İstatistik'),
-          BottomNavigationBarItem(icon: Icon(Icons.fact_check_rounded), label: 'Doğrulama'),
-          BottomNavigationBarItem(icon: Icon(Icons.tips_and_updates_rounded), label: 'Öneri'),
-        ],
+    return PopScope(
+      canPop: _history.isEmpty,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _history.isNotEmpty) {
+          setState(() => _currentIndex = _history.removeLast());
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Color(0xFFF5F3FF), Color(0xFFE4DCFF)],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
+          ),
+          child: IndexedStack(index: _currentIndex, children: _pages),
+        ),
+        bottomNavigationBar: BottomNavigationBar(
+          currentIndex: _currentIndex,
+          onTap: _onTabTap,
+          selectedItemColor: Colors.indigo,
+          unselectedItemColor: Colors.grey,
+          type: BottomNavigationBarType.fixed,
+          items: const [
+            BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'Özet'),
+            BottomNavigationBarItem(icon: Icon(Icons.auto_graph_rounded), label: 'İstatistik'),
+            BottomNavigationBarItem(icon: Icon(Icons.fact_check_rounded), label: 'Doğrulama'),
+            BottomNavigationBarItem(icon: Icon(Icons.tips_and_updates_rounded), label: 'Öneri'),
+          ],
+        ),
       ),
     );
   }
@@ -137,6 +272,18 @@ class _DashboardPageState extends State<DashboardPage> {
   Future<void> _fetchAllData() async {
     setState(() => _isLoading = true);
     try {
+      // Splash ekranında önceden yüklendiyse anında kullan
+      if (_AppDataCache.summary != null) {
+        setState(() {
+          _allUsageSummary = _AppDataCache.summary!;
+          _appUsageList = _AppDataCache.appList ?? [];
+        });
+        _AppDataCache.summary = null;
+        _AppDataCache.appList = null;
+        return;
+      }
+
+      // Manuel yenileme: tekrar çek
       final Map<dynamic, dynamic> summary = await platform.invokeMethod('getAllUsageData');
       final List<dynamic> usageList = await platform.invokeMethod('getAppUsageList', {'period': _selectedPeriod});
 
@@ -145,45 +292,32 @@ class _DashboardPageState extends State<DashboardPage> {
         _appUsageList = usageList;
       });
 
-      // 1. Veritabanını kontrol et: satır sayısı az VEYA verinin büyük çoğunluğu 0 ise yeniden import et
       final existingRows = await DatabaseHelper.instance.queryLastNDays(90);
       final rowCount = existingRows.length;
-      final nonZeroCount = existingRows
-          .where((r) => ((r['mobile_mb'] as num?) ?? 0) > 0.0)
-          .length;
-      final needsImport = rowCount < 60 || nonZeroCount < 3;
+      final nonZeroCount = existingRows.where((r) => ((r['mobile_mb'] as num?) ?? 0) > 0.0).length;
 
-      if (needsImport) {
-        debugPrint("Veritabanında $rowCount satır var, 90 günlük geçmiş import ediliyor...");
-        final List<dynamic> history = await platform.invokeMethod(
-          'getHistoricalDailyUsage',
-          {'days': 90},
-        );
-
-        for (var day in history) {
-          // Kotlin'den gelen format: "yyyy-MM-dd" — doğrudan kullanıyoruz
+      if (rowCount < 60 || nonZeroCount < 3) {
+        final List<dynamic> history = await platform.invokeMethod('getHistoricalDailyUsage', {'days': 90});
+        final rows = history.map<Map<String, dynamic>>((day) {
           final String dateStr = day['date'] as String;
-          await DatabaseHelper.instance.insertOrUpdate({
+          return {
             'date': dateStr,
             'mobile_mb': (day['mobileMB'] as num?)?.toDouble() ?? 0.0,
             'wifi_mb': (day['wifiMB'] as num?)?.toDouble() ?? 0.0,
             'day_of_week': _getDayOfWeekFromDate(dateStr),
-          });
-        }
-        debugPrint("90 günlük geçmiş import tamamlandı.");
+          };
+        }).toList();
+        await DatabaseHelper.instance.batchInsertOrUpdate(rows);
       }
 
       final now = DateTime.now();
       final String todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
-
       await DatabaseHelper.instance.insertOrUpdate({
         'date': todayStr,
         'mobile_mb': _allUsageSummary['1d_mobile'] ?? 0.0,
         'wifi_mb': _allUsageSummary['1d_wifi'] ?? 0.0,
         'day_of_week': now.weekday,
       });
-
-      debugPrint("Senkronizasyon tamamlandı.");
 
     } catch (e) {
       debugPrint("Hata: $e");
@@ -203,7 +337,7 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey[100],
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         title: const Text('Kullanım Detayları'),
         actions: [
@@ -245,18 +379,44 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Widget _buildSummaryGrid() {
+    final cards = [
+      {
+        'title': 'Son 1 Saat',
+        'value': "${_allUsageSummary['1h_mobile']?.toStringAsFixed(1)} MB",
+        'icon': Icons.schedule_rounded,
+        'colors': [const Color(0xFF1565C0), const Color(0xFF42A5F5)],
+      },
+      {
+        'title': 'Bugün',
+        'value': "${_allUsageSummary['1d_mobile']?.toStringAsFixed(1)} MB",
+        'icon': Icons.today_rounded,
+        'colors': [const Color(0xFF283593), const Color(0xFF5C6BC0)],
+      },
+      {
+        'title': 'Bu Hafta',
+        'value': "${_allUsageSummary['1w_mobile']?.toStringAsFixed(1)} MB",
+        'icon': Icons.date_range_rounded,
+        'colors': [const Color(0xFF4527A0), const Color(0xFF9575CD)],
+      },
+      {
+        'title': 'Bu Ay',
+        'value': "${_allUsageSummary['1m_mobile']?.toStringAsFixed(1)} MB",
+        'icon': Icons.calendar_month_rounded,
+        'colors': [const Color(0xFF6A1B9A), const Color(0xFFBA68C8)],
+      },
+    ];
     return Container(
       padding: const EdgeInsets.all(16),
       child: GridView.count(
         shrinkWrap: true, crossAxisCount: 2, childAspectRatio: 2.1,
         crossAxisSpacing: 12, mainAxisSpacing: 12,
         physics: const NeverScrollableScrollPhysics(),
-        children: [
-          _summaryCard("Son 1 Saat", "${_allUsageSummary['1h_mobile']?.toStringAsFixed(1)} MB", Colors.lightBlue.shade600),
-          _summaryCard("Bugün", "${_allUsageSummary['1d_mobile']?.toStringAsFixed(1)} MB", Colors.indigo.shade600),
-          _summaryCard("Bu Hafta", "${_allUsageSummary['1w_mobile']?.toStringAsFixed(1)} MB", Colors.deepPurple.shade600),
-          _summaryCard("Bu Ay", "${_allUsageSummary['1m_mobile']?.toStringAsFixed(1)} MB", Colors.purple.shade600),
-        ],
+        children: cards.map((c) => _summaryCard(
+          c['title'] as String,
+          c['value'] as String,
+          c['icon'] as IconData,
+          c['colors'] as List<Color>,
+        )).toList(),
       ),
     );
   }
@@ -297,11 +457,30 @@ class _DashboardPageState extends State<DashboardPage> {
             ],
           ),
           const Divider(height: 30),
-          Text(
-            wifi > mobile
-                ? "Tebrikler! Verinizin %${(savingRate * 100).toStringAsFixed(0)}'ini Wi-Fi ile kullanarak tasarruf ettiniz."
-                : "Uyarı: Mobil veri kullanımınız Wi-Fi'dan daha yüksek.",
-            style: const TextStyle(fontSize: 12, color: Colors.grey, fontStyle: FontStyle.italic),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: wifi > mobile ? const Color(0xFFE8F5E9) : const Color(0xFFFFF3E0),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              children: [
+                Text(wifi > mobile ? '✨' : '⚠️', style: const TextStyle(fontSize: 14)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    wifi > mobile
+                        ? "Verinizin %${(savingRate * 100).toStringAsFixed(0)}'ini Wi-Fi ile kullanarak tasarruf ettiniz."
+                        : "Mobil veri kullanımınız Wi-Fi'dan daha yüksek.",
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: wifi > mobile ? const Color(0xFF2E7D32) : const Color(0xFFE65100),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -319,18 +498,29 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  Widget _summaryCard(String title, String value, Color color) {
+  Widget _summaryCard(String title, String value, IconData icon, List<Color> colors) {
     return Container(
       decoration: BoxDecoration(
-        color: color, borderRadius: BorderRadius.circular(16),
-        boxShadow: [BoxShadow(color: color.withOpacity(0.3), blurRadius: 8, offset: const Offset(0, 4))],
+        gradient: LinearGradient(
+          colors: colors,
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [BoxShadow(color: colors[0].withAlpha(80), blurRadius: 12, offset: const Offset(0, 5))],
       ),
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(title, style: const TextStyle(color: Colors.white70, fontSize: 11)),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(title, style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w500, letterSpacing: 0.2)),
+              Icon(icon, color: Colors.white38, size: 15),
+            ],
+          ),
           Text(value, style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
         ],
       ),
@@ -401,16 +591,7 @@ class StatisticsPage extends StatefulWidget {
 class _StatisticsPageState extends State<StatisticsPage> {
   List<dynamic> _monthlyData = [];
   bool _isLoading = false;
-
-  Color _getBarColor(int index) {
-    final List<Color> colors = [
-      Colors.blue.shade400,
-      Colors.deepPurple.shade400,
-      Colors.indigo.shade400,
-      Colors.purple.shade400
-    ];
-    return colors[index % colors.length];
-  }
+  int _touchedIndex = -1;
 
   @override
   void initState() {
@@ -507,7 +688,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         title: const Text('90 Günlük Analiz'),
         actions: [
@@ -537,70 +718,135 @@ class _StatisticsPageState extends State<StatisticsPage> {
   Widget _buildChartArea() {
     if (_monthlyData.isEmpty) return const SizedBox(height: 250, child: Center(child: Text("Veri yok")));
 
-    return SizedBox(
-      height: 280, // Tek sayfaya sığması için yüksekliği biraz optimize ettik
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 20, 20, 10),
-        child: BarChart(
-          BarChartData(
-            // Grafik sınırlarını ve kaydırmayı devre dışı bırakıyoruz
-            alignment: BarChartAlignment.spaceAround,
-            maxY: _monthlyData.map((e) => e['usageMB'] as double).reduce((a, b) => a > b ? a : b) * 1.2,
+    final maxVal = _monthlyData.map((e) => e['usageMB'] as double).reduce((a, b) => a > b ? a : b);
+    final double gridInterval = maxVal > 0 ? (maxVal / 4).ceilToDouble() : 500.0;
 
-            gridData: const FlGridData(show: false),
-            titlesData: FlTitlesData(
-              topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-              rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-              leftTitles: AxisTitles(
-                sideTitles: SideTitles(
-                  showTitles: true,
-                  reservedSize: 40,
-                  getTitlesWidget: (v, m) => SideTitleWidget(
-                    meta: m,
-                    child: Text("${v.toInt()}", style: const TextStyle(fontSize: 9, color: Colors.grey)),
-                  ),
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.indigo.shade100.withOpacity(0.6),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 24, 16, 12),
+        child: SizedBox(
+          height: 280,
+          child: BarChart(
+            BarChartData(
+              alignment: BarChartAlignment.spaceAround,
+              maxY: maxVal * 1.25,
+              barTouchData: BarTouchData(
+                enabled: true,
+                touchCallback: (event, response) {
+                  setState(() {
+                    _touchedIndex = (response?.spot != null) ? response!.spot!.touchedBarGroupIndex : -1;
+                  });
+                },
+                touchTooltipData: BarTouchTooltipData(
+                  getTooltipColor: (_) => Colors.indigo.shade900.withOpacity(0.92),
+                  tooltipRoundedRadius: 10,
+                  tooltipPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  getTooltipItem: (group, _, rod, __) {
+                    final dayData = _monthlyData[group.x];
+                    final date = _formatFullDate(dayData['date']);
+                    final mb = (dayData['usageMB'] as double).toStringAsFixed(2);
+                    return BarTooltipItem(
+                      '$date\n',
+                      const TextStyle(color: Colors.white70, fontWeight: FontWeight.w500, fontSize: 11),
+                      children: [
+                        TextSpan(
+                          text: '$mb MB',
+                          style: const TextStyle(
+                            color: Colors.lightBlueAccent,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
-              bottomTitles: AxisTitles(
-                sideTitles: SideTitles(
-                  showTitles: true,
-                  reservedSize: 30,
-                  interval: 1, // Her birimi kontrol et
-                    // _buildChartArea içindeki bottomTitles -> SideTitles -> getTitlesWidget kısmı:
+              gridData: FlGridData(
+                show: true,
+                drawVerticalLine: false,
+                horizontalInterval: gridInterval,
+                getDrawingHorizontalLine: (_) => FlLine(
+                  color: Colors.grey.shade200,
+                  strokeWidth: 1,
+                ),
+              ),
+              titlesData: FlTitlesData(
+                topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                leftTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 44,
+                    getTitlesWidget: (v, m) {
+                      if (v == 0) return const SizedBox();
+                      final label = v >= 1000 ? "${(v / 1000).toStringAsFixed(1)}G" : "${v.toInt()}";
+                      return SideTitleWidget(
+                        meta: m,
+                        child: Text(label, style: const TextStyle(fontSize: 9, color: Colors.grey)),
+                      );
+                    },
+                  ),
+                ),
+                bottomTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 30,
+                    interval: 1,
                     getTitlesWidget: (value, meta) {
                       int index = value.toInt();
-                      int total = _monthlyData.length; // Genelde 30
+                      int total = _monthlyData.length;
                       if (total == 0) return const SizedBox();
-
-                      // 0, 7, 14, 21, 29 indeksleri (Tam 5 nokta)
-                      List<int> points = [0, (total / 4).floor(), (total / 2).floor(), (total * 3 / 4).floor(), total - 1];
-
+                      final points = [0, (total / 4).floor(), (total / 2).floor(), (total * 3 / 4).floor(), total - 1];
                       if (points.contains(index)) {
                         DateTime dt = DateTime.parse(_monthlyData[index]['date']);
                         return SideTitleWidget(
                           meta: meta,
-                          child: Text("${dt.day}/${dt.month}", style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                          child: Text(
+                            "${dt.day}/${dt.month}",
+                            style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.indigo.shade400),
+                          ),
                         );
                       }
                       return const SizedBox();
-                    }
+                    },
+                  ),
                 ),
               ),
+              borderData: FlBorderData(show: false),
+              barGroups: _monthlyData.asMap().entries.map((e) {
+                final isTouched = e.key == _touchedIndex;
+                return BarChartGroupData(
+                  x: e.key,
+                  barRods: [
+                    BarChartRodData(
+                      toY: e.value['usageMB'] as double,
+                      gradient: LinearGradient(
+                        colors: isTouched
+                            ? [Colors.amber.shade300, Colors.orange.shade500]
+                            : [Colors.blue.shade300, Colors.deepPurple.shade400],
+                        begin: Alignment.bottomCenter,
+                        end: Alignment.topCenter,
+                      ),
+                      width: isTouched ? 5 : 3,
+                      borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+                    ),
+                  ],
+                );
+              }).toList(),
             ),
-            borderData: FlBorderData(show: false),
-            barGroups: _monthlyData.asMap().entries.map((e) {
-              return BarChartGroupData(
-                x: e.key,
-                barRods: [
-                  BarChartRodData(
-                    toY: (e.value['usageMB'] as double),
-                    color: _getBarColor(e.key),
-                    width: 3,
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(2)),
-                  )
-                ],
-              );
-            }).toList(),
           ),
         ),
       ),
@@ -1034,108 +1280,175 @@ class _VerifyPageState extends State<VerifyPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF8F9FE), // Diğer sekmelerle uyumlu hafif ton
-      appBar: AppBar(title: const Text('Veri Doğrulama')),
+      backgroundColor: Colors.transparent,
+      appBar: AppBar(title: const Text('Doğrulama'), backgroundColor: Colors.transparent),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
+        padding: const EdgeInsets.fromLTRB(24, 8, 24, 40),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // İkon Alanı - Gradyanlı Tasarım
-            Container(
-              padding: const EdgeInsets.all(25),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [Colors.indigo.shade400, Colors.purple.shade400],
-                ),
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(color: Colors.purple.withOpacity(0.2), blurRadius: 20, spreadRadius: 5)
+            Text('KARŞILAŞTIRMA', style: TextStyle(
+              fontSize: 11, fontWeight: FontWeight.w700,
+              color: Colors.deepPurple.shade400, letterSpacing: 1.8,
+            )),
+            const SizedBox(height: 10),
+            RichText(
+              text: TextSpan(
+                style: const TextStyle(fontSize: 32, color: Colors.black87, fontWeight: FontWeight.bold, height: 1.1),
+                children: [
+                  const TextSpan(text: 'Faturanı '),
+                  TextSpan(
+                    text: 'doğrula.',
+                    style: TextStyle(color: Colors.deepPurple.shade500, fontStyle: FontStyle.italic),
+                  ),
                 ],
               ),
-              child: const Icon(Icons.fact_check_rounded, size: 60, color: Colors.white),
             ),
-            const SizedBox(height: 30),
-
-            // Dinamik Yazı Alanı
+            const SizedBox(height: 14),
             Text(
-              _status,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.indigo.shade900
-              ),
+              'Operatörünün PDF dökümanını yükle, bizim ölçtüğümüz kullanımla karşılaştıralım. Eşleşmiyorsa farkı sana gösterelim.',
+              style: TextStyle(fontSize: 14, color: Colors.grey.shade600, height: 1.55),
             ),
-            const SizedBox(height: 30),
+            const SizedBox(height: 28),
 
-            // Dinamik Sonuç Alanı
-            if (_resultData != null) ...[
-              // Sapma Dairesi
-              Container(
-                width: 140, height: 140,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(color: _driftColor, width: 6),
-                  color: Colors.white,
-                  boxShadow: [BoxShadow(color: _driftColor.withOpacity(0.1), blurRadius: 15)],
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                        "%${_driftPercent.toStringAsFixed(1)}",
-                        style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: _driftColor)
-                    ),
-                    Text("Sapma", style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 40),
+            if (_resultData != null) _buildResultSection()
+            else _buildUploadArea(),
 
-              // Bilgi Kartları (Aynı Hizada Kart Yapısı)
-              _buildModernRow(Icons.calendar_month_rounded, "Analiz Aralığı:", _resultData!['range'], Colors.blue),
-              _buildModernRow(Icons.sensors_rounded, "${_resultData!['operatorName']} Verisi:", _resultData!['operator'], Colors.deepPurple),
-              _buildModernRow(Icons.phonelink_ring_rounded, "Cihaz Verisi:", _resultData!['device'], Colors.purple),
-              if (_resultData!['coverage'] != null)
-                _buildModernRow(Icons.date_range_rounded, "Takip Kapsamı:", _resultData!['coverage']!, Colors.teal),
-            ],
-
-            const SizedBox(height: 40),
-
-            // Analiz Butonu - Gradyanlı
             if (_isProcessing)
-              const CircularProgressIndicator(color: Colors.indigo)
-            else
-              Container(
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(16),
-                  gradient: LinearGradient(colors: [Colors.blue.shade600, Colors.indigo.shade700]),
-                  boxShadow: [
-                    BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 4))
-                  ],
-                ),
-                child: ElevatedButton.icon(
-                  onPressed: _pickAndProcessPDF,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    shadowColor: Colors.transparent,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  ),
-                  icon: const Icon(Icons.upload_file_rounded),
-                  label: const Text("PDF ANALİZ ET", style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 1.1)),
-                ),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 20),
+                child: Center(child: CircularProgressIndicator(color: Colors.deepPurple)),
               ),
+
+            if (_resultData == null) ...[
+              const SizedBox(height: 40),
+              _buildHowItWorks(),
+            ],
           ],
         ),
       ),
     );
   }
 
-  // Modern Bilgi Satırı Widget'ı (Kart Görünümlü)
+  Widget _buildUploadArea() {
+    return GestureDetector(
+      onTap: _pickAndProcessPDF,
+      child: CustomPaint(
+        painter: _DashedBorderPainter(color: Colors.deepPurple.shade200, radius: 16),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 20),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF3EEFF),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.deepPurple.shade300, Colors.purple.shade500],
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: const Icon(Icons.description_rounded, color: Colors.white, size: 32),
+              ),
+              const SizedBox(height: 14),
+              const Text('Dosya seç ve analiz et',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+              const SizedBox(height: 4),
+              Text('Maksimum 10 MB · sadece operatör faturası',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHowItWorks() {
+    final steps = [
+      {'num': '01', 'title': 'PDF yüklenir', 'desc': 'Cihazda işlenir; hiçbir yere gönderilmez.'},
+      {'num': '02', 'title': 'Sayılar çıkarılır', 'desc': 'Operatörün bildirdiği MB ve GB değerleri ayıklanır.'},
+      {'num': '03', 'title': 'Karşılaştırılır', 'desc': 'Telefonun ölçtüğü kullanım ile fatura verisi eşleştirilir.'},
+      {'num': '04', 'title': 'Sonuç gösterilir', 'desc': 'Fark varsa sapma yüzdesi ve ayrıntılar sana sunulur.'},
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('NASIL ÇALIŞIR', style: TextStyle(
+          fontSize: 11, fontWeight: FontWeight.w700,
+          color: Colors.deepPurple.shade400, letterSpacing: 1.8,
+        )),
+        const SizedBox(height: 20),
+        ...steps.map((s) => Padding(
+          padding: const EdgeInsets.only(bottom: 22),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(s['num']!, style: TextStyle(
+                fontSize: 22, fontWeight: FontWeight.w800,
+                color: Colors.deepPurple.shade200,
+              )),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 3),
+                    Text(s['title']!, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                    const SizedBox(height: 3),
+                    Text(s['desc']!, style: TextStyle(fontSize: 13, color: Colors.grey.shade600, height: 1.4)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        )),
+      ],
+    );
+  }
+
+  Widget _buildResultSection() {
+    return Column(
+      children: [
+        Center(
+          child: Container(
+            width: 140, height: 140,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: _driftColor, width: 6),
+              color: Colors.white,
+              boxShadow: [BoxShadow(color: _driftColor.withAlpha(30), blurRadius: 15)],
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text("%${_driftPercent.toStringAsFixed(1)}",
+                    style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: _driftColor)),
+                Text("Sapma", style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 28),
+        _buildModernRow(Icons.calendar_month_rounded, "Analiz Aralığı:", _resultData!['range'], Colors.blue),
+        _buildModernRow(Icons.sensors_rounded, "${_resultData!['operatorName']} Verisi:", _resultData!['operator'], Colors.deepPurple),
+        _buildModernRow(Icons.phonelink_ring_rounded, "Cihaz Verisi:", _resultData!['device'], Colors.purple),
+        if (_resultData!['coverage'] != null)
+          _buildModernRow(Icons.date_range_rounded, "Takip Kapsamı:", _resultData!['coverage']!, Colors.teal),
+        const SizedBox(height: 8),
+        TextButton.icon(
+          onPressed: _pickAndProcessPDF,
+          icon: Icon(Icons.refresh_rounded, size: 16, color: Colors.deepPurple.shade400),
+          label: Text('Farklı bir PDF analiz et',
+              style: TextStyle(color: Colors.deepPurple.shade400, fontSize: 13)),
+        ),
+      ],
+    );
+  }
+
   Widget _buildModernRow(IconData icon, String label, String value, Color color) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -1143,13 +1456,16 @@ class _VerifyPageState extends State<VerifyPage> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(15),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 10)],
+        boxShadow: [const BoxShadow(color: Color(0x08000000), blurRadius: 10)],
       ),
       child: Row(
         children: [
           Container(
             padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
+            decoration: BoxDecoration(
+              color: color.withAlpha(25),
+              borderRadius: BorderRadius.circular(12),
+            ),
             child: Icon(icon, color: color, size: 24),
           ),
           const SizedBox(width: 16),
@@ -1167,6 +1483,37 @@ class _VerifyPageState extends State<VerifyPage> {
       ),
     );
   }
+}
+
+class _DashedBorderPainter extends CustomPainter {
+  final Color color;
+  final double radius;
+  const _DashedBorderPainter({required this.color, required this.radius});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    final path = Path()
+      ..addRRect(RRect.fromRectAndRadius(
+        Rect.fromLTWH(0, 0, size.width, size.height),
+        Radius.circular(radius),
+      ));
+    const dashLen = 6.0;
+    const gapLen = 5.0;
+    for (final metric in path.computeMetrics()) {
+      double d = 0;
+      while (d < metric.length) {
+        canvas.drawPath(metric.extractPath(d, d + dashLen), paint);
+        d += dashLen + gapLen;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedBorderPainter old) => old.color != color;
 }
 
 // --- SEKME 4: TAHMİN ---
@@ -1298,7 +1645,7 @@ class _SuggestionPageState extends State<SuggestionPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey[100],
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
         title: const Text('Tahmin'),
         actions: [
@@ -1372,66 +1719,197 @@ class _SuggestionPageState extends State<SuggestionPage> {
       return const Center(child: Text('Tahmin için yeterli veri yok.'));
     }
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          _buildTopSection(p),
+          const SizedBox(height: 24),
           _buildQuotaCard(p),
           const SizedBox(height: 12),
-          _buildPredictionCard(p),
-          const SizedBox(height: 12),
-          _buildDowChart(p),
-          const SizedBox(height: 12),
-          _buildTrendCard(p),
-          const SizedBox(height: 12),
+          _buildDailyAvgCard(p),
+          const SizedBox(height: 28),
+          _buildDowSection(p),
+          const SizedBox(height: 24),
           _buildMethodologyCard(p),
-          const SizedBox(height: 16),
         ],
       ),
     );
   }
 
-  // --- Kota kartı ---
+  // --- Üst bölüm: halka + durum/tarih ---
+  Widget _buildTopSection(PredictionResult p) {
+    final months = ['', 'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
+                    'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
+    final d = p.estimatedExhaustionDate;
+    final dateStr = '${d.day} ${months[d.month]}';
+
+    Color statusColor;
+    String statusLabel;
+    IconData statusIcon;
+    if (p.daysRemaining <= 3) {
+      statusColor = Colors.red;
+      statusLabel = 'Kritik';
+      statusIcon  = Icons.warning_rounded;
+    } else if (p.daysRemaining <= 7) {
+      statusColor = Colors.orange;
+      statusLabel = 'Dikkat';
+      statusIcon  = Icons.info_rounded;
+    } else {
+      statusColor = const Color(0xFF43A047);
+      statusLabel = 'Yolunda';
+      statusIcon  = Icons.check_circle_rounded;
+    }
+
+    // Geçen süreyi göster: dönem ilerledikçe halka dolar
+    final ringProgress = (1.0 - (p.daysRemaining / 30)).clamp(0.0, 1.0);
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        SizedBox(
+          width: 130,
+          height: 130,
+          child: CustomPaint(
+            painter: _RingPainter(progress: ringProgress, color: const Color(0xFF7B61FF)),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '${p.daysRemaining}',
+                    style: TextStyle(
+                        fontSize: 40,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.grey[800],
+                        height: 1),
+                  ),
+                  const SizedBox(height: 2),
+                  Text('gün kaldı',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+                ],
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 20),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(statusIcon, color: statusColor, size: 14),
+                    const SizedBox(width: 5),
+                    Text(statusLabel,
+                        style: TextStyle(
+                            color: statusColor,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              RichText(
+                text: TextSpan(
+                  style: TextStyle(fontSize: 16, color: Colors.grey[800], height: 1.4),
+                  children: [
+                    const TextSpan(text: 'Paketin '),
+                    TextSpan(
+                      text: dateStr,
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, color: statusColor),
+                    ),
+                    const TextSpan(text: "'a kadar\nyetecek."),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text('Aralık: ${p.scenarioRange}',
+                  style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // --- BU DÖNEM kota kartı ---
   Widget _buildQuotaCard(PredictionResult p) {
     final usedGB  = p.usedMB  / 1024;
     final quotaGB = p.quotaMB / 1024;
     final remGB   = p.remainingMB / 1024;
+
     return Card(
       elevation: 0,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Padding(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Icon(Icons.sim_card_rounded, color: p.quotaColor, size: 20),
-                const SizedBox(width: 8),
-                const Text('Bu Dönem Kullanımı',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                const Spacer(),
-                Text('${usedGB.toStringAsFixed(1)} / ${quotaGB.toStringAsFixed(1)} GB',
-                    style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+                Text('BU DÖNEM',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.grey[500],
+                        letterSpacing: 1.2)),
+                Text('${quotaGB.toStringAsFixed(0)} GB paket',
+                    style: TextStyle(fontSize: 13, color: Colors.grey[500])),
               ],
+            ),
+            const SizedBox(height: 10),
+            RichText(
+              text: TextSpan(
+                children: [
+                  TextSpan(
+                    text: usedGB.toStringAsFixed(1),
+                    style: const TextStyle(
+                        fontSize: 30,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                        height: 1.1),
+                  ),
+                  const TextSpan(
+                    text: ' GB kullanıldı',
+                    style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87,
+                        height: 1.1),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 14),
             ClipRRect(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(7),
               child: LinearProgressIndicator(
                 value: p.usedPercent,
                 minHeight: 10,
-                backgroundColor: Colors.grey[200],
-                valueColor: AlwaysStoppedAnimation<Color>(p.quotaColor),
+                backgroundColor: Colors.grey.shade200,
+                valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF7B61FF)),
               ),
             ),
             const SizedBox(height: 10),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Kalan: ${remGB.toStringAsFixed(2)} GB',
-                    style: const TextStyle(fontWeight: FontWeight.w600)),
-                Text('%${(p.usedPercent * 100).toStringAsFixed(0)} kullanıldı',
-                    style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+                Text('%${(p.usedPercent * 100).toStringAsFixed(0)}',
+                    style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+                Text('${remGB.toStringAsFixed(2)} GB kalan',
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.bold)),
               ],
             ),
           ],
@@ -1440,83 +1918,53 @@ class _SuggestionPageState extends State<SuggestionPage> {
     );
   }
 
-  // --- Ana tahmin kartı ---
-  Widget _buildPredictionCard(PredictionResult p) {
-    final months = ['', 'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
-                    'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
-    final d = p.estimatedExhaustionDate;
-    final dateStr = '${d.day} ${months[d.month]} ${d.year}';
-
-    Color urgencyColor;
-    String urgencyMsg;
-    IconData urgencyIcon;
-    if (p.daysRemaining <= 3) {
-      urgencyColor = Colors.red;
-      urgencyMsg   = 'Kritik — çok az kaldı!';
-      urgencyIcon  = Icons.warning_rounded;
-    } else if (p.daysRemaining <= 7) {
-      urgencyColor = Colors.orange;
-      urgencyMsg   = 'Dikkat — yakında bitiyor';
-      urgencyIcon  = Icons.info_rounded;
-    } else {
-      urgencyColor = Colors.indigo;
-      urgencyMsg   = 'Pakediniz yolunda görünüyor';
-      urgencyIcon  = Icons.check_circle_rounded;
-    }
+  // --- Günlük ortalama küçük kartı ---
+  Widget _buildDailyAvgCard(PredictionResult p) {
+    final avgGB = p.averageDailyMB / 1024;
+    final trendText = p.trendFactor > 1.1
+        ? '+%${((p.trendFactor - 1) * 100).toStringAsFixed(0)} son 14 gün'
+        : p.trendFactor < 0.9
+            ? '-%${((1 - p.trendFactor) * 100).toStringAsFixed(0)} son 14 gün'
+            : 'Stabil seyir';
 
     return Card(
       elevation: 0,
-      color: urgencyColor.withOpacity(0.07),
-      shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-          side: BorderSide(color: urgencyColor.withOpacity(0.3))),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        child: Row(
           children: [
-            Row(
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.indigo.withValues(alpha: 0.08),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.speed_rounded, color: Colors.indigo, size: 20),
+            ),
+            const SizedBox(width: 16),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(urgencyIcon, color: urgencyColor, size: 20),
-                const SizedBox(width: 8),
-                Text(urgencyMsg,
-                    style: TextStyle(color: urgencyColor, fontWeight: FontWeight.bold)),
+                Text('Günlük ortalama',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+                Text('${avgGB.toStringAsFixed(2)} GB',
+                    style: const TextStyle(
+                        fontSize: 22, fontWeight: FontWeight.bold, height: 1.15)),
               ],
             ),
-            const SizedBox(height: 20),
-            Text(
-              '${p.daysRemaining}',
-              style: TextStyle(
-                  fontSize: 64,
-                  fontWeight: FontWeight.bold,
-                  color: urgencyColor,
-                  height: 1),
-            ),
-            Text('gün kaldı',
-                style: TextStyle(fontSize: 18, color: Colors.grey[700])),
-            const SizedBox(height: 8),
-            Text('Tahmini bitiş: $dateStr',
-                style: TextStyle(fontSize: 13, color: Colors.grey[600])),
-            const SizedBox(height: 4),
-            Text('Aralık: ${p.scenarioRange}',
-                style: TextStyle(fontSize: 12, color: Colors.grey[500])),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.speed_rounded, size: 16, color: Colors.grey[600]),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Günlük ortalama: ${(p.averageDailyMB / 1024).toStringAsFixed(2)} GB',
-                    style: TextStyle(fontSize: 13, color: Colors.grey[700]),
-                  ),
-                ],
-              ),
+            const Spacer(),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Icon(p.trendIcon, color: p.trendColor, size: 22),
+                const SizedBox(height: 3),
+                Text(trendText,
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: p.trendColor,
+                        fontWeight: FontWeight.w600)),
+              ],
             ),
           ],
         ),
@@ -1524,37 +1972,40 @@ class _SuggestionPageState extends State<SuggestionPage> {
     );
   }
 
-  // --- Haftanın günü bar chart ---
-  Widget _buildDowChart(PredictionResult p) {
+  // --- HAFTALIK RİTİM bölümü ---
+  Widget _buildDowSection(PredictionResult p) {
     const days = ['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'];
     final maxVal = p.dowAveragesMB.reduce((a, b) => a > b ? a : b);
+    final maxIdx = p.dowAveragesMB.indexWhere((v) => v == maxVal);
 
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 20, 16, 16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Row(
-              children: [
-                Icon(Icons.bar_chart_rounded, color: Colors.indigo, size: 20),
-                SizedBox(width: 8),
-                Text('Günlük Ortalama Kullanım',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text('Haftanın günlerine göre',
+            Text('HAFTALIK RİTİM',
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.grey[500],
+                    letterSpacing: 1.1)),
+            Text('${days[maxIdx]} en yoğun',
                 style: TextStyle(fontSize: 12, color: Colors.grey[500])),
-            const SizedBox(height: 16),
-            SizedBox(
-              height: 160,
+          ],
+        ),
+        const SizedBox(height: 10),
+        Card(
+          elevation: 0,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(8, 20, 8, 12),
+            child: SizedBox(
+              height: 175,
               child: BarChart(
                 BarChartData(
                   alignment: BarChartAlignment.spaceAround,
-                  maxY: maxVal * 1.25,
+                  maxY: maxVal * 1.38,
                   gridData: const FlGridData(show: false),
                   borderData: FlBorderData(show: false),
                   titlesData: FlTitlesData(
@@ -1564,96 +2015,63 @@ class _SuggestionPageState extends State<SuggestionPage> {
                     bottomTitles: AxisTitles(
                       sideTitles: SideTitles(
                         showTitles: true,
-                        getTitlesWidget: (val, _) => Text(
-                          days[val.toInt()],
-                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
-                        ),
+                        reservedSize: 28,
+                        getTitlesWidget: (val, _) {
+                          final idx = val.toInt();
+                          final isMax = idx == maxIdx;
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text(
+                              days[idx],
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: isMax ? FontWeight.bold : FontWeight.w500,
+                                  color: isMax ? Colors.indigo : Colors.grey[500]),
+                            ),
+                          );
+                        },
                       ),
                     ),
                   ),
                   barGroups: List.generate(7, (i) {
-                    final isWeekend = i >= 5;
+                    final isMax = i == maxIdx;
                     return BarChartGroupData(
                       x: i,
+                      showingTooltipIndicators: isMax ? [0] : [],
                       barRods: [
                         BarChartRodData(
                           toY: p.dowAveragesMB[i],
-                          color: isWeekend
-                              ? Colors.indigoAccent
-                              : Colors.indigo,
+                          color: isMax
+                              ? const Color(0xFF3F51B5)
+                              : const Color(0xFF3F51B5).withValues(alpha: 0.22),
                           width: 22,
                           borderRadius: const BorderRadius.vertical(
-                              top: Radius.circular(6)),
-                          rodStackItems: [],
+                              top: Radius.circular(7)),
                         ),
                       ],
                     );
                   }),
                   barTouchData: BarTouchData(
                     touchTooltipData: BarTouchTooltipData(
+                      tooltipRoundedRadius: 8,
+                      tooltipPadding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      getTooltipColor: (_) => const Color(0xFF2C2C3E),
                       getTooltipItem: (group, _, rod, __) => BarTooltipItem(
                         '${(rod.toY / 1024).toStringAsFixed(2)} GB',
-                        const TextStyle(color: Colors.white, fontSize: 12),
+                        const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600),
                       ),
                     ),
                   ),
                 ),
               ),
             ),
-          ],
+          ),
         ),
-      ),
-    );
-  }
-
-  // --- Trend kartı ---
-  Widget _buildTrendCard(PredictionResult p) {
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: p.trendColor.withOpacity(0.12),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(p.trendIcon, color: p.trendColor, size: 28),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Kullanım Trendi: ${p.trendLabel}',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                  const SizedBox(height: 4),
-                  Text(
-                    p.trendFactor > 1.0
-                        ? 'Son 14 günde kullanımınız önceki 14 güne göre %${((p.trendFactor - 1) * 100).toStringAsFixed(0)} arttı.'
-                        : p.trendFactor < 1.0
-                            ? 'Son 14 günde kullanımınız önceki 14 güne göre %${((1 - p.trendFactor) * 100).toStringAsFixed(0)} azaldı.'
-                            : 'Kullanımınız son dönemde istikrarlı seyrediyor.',
-                    style: TextStyle(fontSize: 13, color: Colors.grey[600]),
-                  ),
-                  if (p.longTermDrift > 1.05 || p.longTermDrift < 0.95) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      p.longTermDrift > 1.05
-                          ? 'Uzun vadeli eğilim: aylık ortalama %${((p.longTermDrift - 1) * 100).toStringAsFixed(0)} artıyor.'
-                          : 'Uzun vadeli eğilim: aylık ortalama %${((1 - p.longTermDrift) * 100).toStringAsFixed(0)} azalıyor.',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+      ],
     );
   }
 
@@ -1680,66 +2098,60 @@ class _SuggestionPageState extends State<SuggestionPage> {
           ),
           child: const Icon(Icons.info_outline_rounded, color: Colors.indigo, size: 20),
         ),
-        title: const Text(
-          'Tahmin Nasıl Yapıldı?',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-        ),
-        subtitle: Text(
-          '${p.dataPointCount} günlük veriye dayanıyor',
-          style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-        ),
+        title: const Text('Tahmin Nasıl Yapıldı?',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+        subtitle: Text('${p.dataPointCount} günlük veriye dayanıyor',
+            style: TextStyle(fontSize: 12, color: Colors.grey[500])),
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
             child: Column(
               children: [
                 const Divider(height: 1),
-                const SizedBox(height: 12),
-                _buildMethodItem(
+                const SizedBox(height: 20),
+
+                // 1 — Veri tabanı
+                _buildMethodBlock(
                   icon: Icons.storage_rounded,
                   color: Colors.indigo,
                   title: 'Veri Tabanı',
-                  body:
-                      'Son ${p.dataPointCount} günlük kullanım geçmişiniz analiz edildi. '
-                      'Ne kadar uzun süredir uygulama kullanılıyorsa tahmin o kadar güvenilir olur.',
+                  body: 'Son ${p.dataPointCount} günlük geçmiş analiz edildi. '
+                      'Veri arttıkça tahmin güvenilirliği artar.',
+                  visual: _buildDataPointsBar(p.dataPointCount),
                 ),
-                const SizedBox(height: 12),
-                _buildMethodItem(
+                const _MethodDivider(),
+
+                // 2 — Haftalık örüntü
+                _buildMethodBlock(
                   icon: Icons.calendar_today_rounded,
                   color: Colors.blue,
                   title: 'Haftalık Örüntü',
-                  body:
-                      'Hafta içi ortalama ${(weekdayAvg / 1024).toStringAsFixed(2)} GB/gün, '
-                      'hafta sonu ${(weekendAvg / 1024).toStringAsFixed(2)} GB/gün kullanıyorsunuz. '
-                      'Tahmin her günü ayrı ayrı modelliyor.',
+                  body: 'Tahmin her günü ayrı ayrı modelliyor.',
+                  visual: _buildWeekdayWeekendBars(weekdayAvg, weekendAvg),
                 ),
-                const SizedBox(height: 12),
-                _buildMethodItem(
+                const _MethodDivider(),
+
+                // 3 — Yakın dönem öncelikli (EWMA)
+                _buildMethodBlock(
                   icon: Icons.history_rounded,
                   color: Colors.teal,
                   title: 'Yakın Dönem Öncelikli',
-                  body:
-                      'Geçmiş verileriniz eşit ağırlıkta değil — son günleriniz daha fazla etkiliyor. '
-                      'Kullanım alışkanlığınız değişirse tahmin buna hızlıca uyum sağlar.',
+                  body: 'Son günler daha fazla etkiliyor — '
+                      'alışkanlık değişirse tahmin hızla uyum sağlar.',
+                  visual: _buildEwmaDecayBar(),
                 ),
-                const SizedBox(height: 12),
-                _buildMethodItem(
-                  icon: Icons.receipt_long_rounded,
-                  color: Colors.orange,
-                  title: 'Fatura Dönemi Etkisi',
-                  body:
-                      'Dönemin başında, ortasında ve sonunda farklı kullanım davranışı sergiliyorsunuz. '
-                      'Bu örüntü geçmiş dönemlerinizden öğrenilip tahmine yansıtıldı.',
-                ),
-                const SizedBox(height: 12),
-                _buildMethodItem(
+                const _MethodDivider(),
+
+                // 4 — Senaryo aralığı
+                _buildMethodBlock(
                   icon: Icons.compare_arrows_rounded,
                   color: Colors.purple,
-                  title: 'Aralık: ${p.scenarioRange}',
-                  body:
-                      'Günlük kullanımınız $volatilityText dalgalanıyor. '
-                      'İyimser senaryoda (daha az kullanım) ${p.daysRemainingOptimistic} gün, '
-                      'kötümser senaryoda (daha fazla kullanım) ${p.daysRemainingPessimistic} gün beklenebilir.',
+                  title: 'Senaryo Aralığı: ${p.scenarioRange}',
+                  body: 'Günlük dalgalanma $volatilityText.',
+                  visual: _buildScenarioRangeBar(
+                      p.daysRemainingPessimistic,
+                      p.daysRemaining,
+                      p.daysRemainingOptimistic),
                 ),
               ],
             ),
@@ -1749,39 +2161,296 @@ class _SuggestionPageState extends State<SuggestionPage> {
     );
   }
 
-  Widget _buildMethodItem({
+  Widget _buildMethodBlock({
     required IconData icon,
     required Color color,
     required String title,
     required String body,
+    required Widget visual,
   }) {
-    return Row(
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          margin: const EdgeInsets.only(top: 2),
-          padding: const EdgeInsets.all(6),
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Icon(icon, color: color, size: 16),
+        Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8)),
+              child: Icon(icon, color: color, size: 15),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w600, fontSize: 13)),
+                  Text(body,
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.grey[500], height: 1.35)),
+                ],
+              ),
+            ),
+          ],
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w600, fontSize: 13)),
-              const SizedBox(height: 3),
-              Text(body,
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600], height: 1.4)),
-            ],
+        const SizedBox(height: 12),
+        visual,
+      ],
+    );
+  }
+
+  // Mini görsel 1: veri noktası doluluk çubuğu
+  Widget _buildDataPointsBar(int count) {
+    final pct = (count / 90).clamp(0.0, 1.0);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(5),
+          child: LinearProgressIndicator(
+            value: pct,
+            minHeight: 7,
+            backgroundColor: Colors.grey[200],
+            valueColor: AlwaysStoppedAnimation<Color>(
+                Colors.deepPurple.withValues(alpha: 0.65)),
           ),
+        ),
+        const SizedBox(height: 4),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('0 gün', style: TextStyle(fontSize: 10, color: Colors.grey[400])),
+            Text('$count / 90 gün',
+                style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.deepPurple.withValues(alpha: 0.8))),
+          ],
         ),
       ],
     );
   }
+
+  // Mini görsel 2: hafta içi vs hafta sonu bar karşılaştırması
+  Widget _buildWeekdayWeekendBars(double weekdayMB, double weekendMB) {
+    final maxVal = math.max(weekdayMB, weekendMB);
+    final wdPct  = maxVal > 0 ? weekdayMB / maxVal : 0.0;
+    final wePct  = maxVal > 0 ? weekendMB / maxVal : 0.0;
+
+    const barColor = Color(0xFF7B61FF); // mor ton
+    const barColorLight = Color(0xFF9E8FFF);
+
+    Widget bar(String label, double pct, Color color, double gb) {
+      return Row(
+        children: [
+          SizedBox(
+            width: 68,
+            child: Text(label,
+                style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+          ),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: pct,
+                minHeight: 8,
+                backgroundColor: Colors.grey[200],
+                valueColor: AlwaysStoppedAnimation<Color>(
+                    color.withValues(alpha: 0.7)),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text('${gb.toStringAsFixed(2)} GB',
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: color)),
+        ],
+      );
+    }
+
+    return Column(
+      children: [
+        bar('Hafta içi', wdPct, barColor, weekdayMB / 1024),
+        const SizedBox(height: 8),
+        bar('Hafta sonu', wePct, barColorLight, weekendMB / 1024),
+      ],
+    );
+  }
+
+  // Mini görsel 3: EWMA ağırlık solma animasyonu
+  Widget _buildEwmaDecayBar() {
+    const alpha = 0.25;
+    final weights = <double>[];
+    double w = 1.0;
+    for (int i = 0; i < 8; i++) {
+      weights.add(w);
+      w *= (1 - alpha);
+    }
+    final maxW = weights.first;
+
+    return Row(
+      children: [
+        Text('Bugün', style: TextStyle(fontSize: 10, color: Colors.grey[500])),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Row(
+            children: List.generate(weights.length, (i) {
+              final opacity = (weights[i] / maxW).clamp(0.1, 1.0);
+              return Expanded(
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 1.5),
+                  height: 16,
+                  decoration: BoxDecoration(
+                    color: Colors.teal.withOpacity(opacity),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text('Eskisi', style: TextStyle(fontSize: 10, color: Colors.grey[400])),
+      ],
+    );
+  }
+
+  // Mini görsel 4: senaryo aralık çubuğu
+  Widget _buildScenarioRangeBar(int pessimistic, int expected, int optimistic) {
+    final minD = pessimistic.toDouble();
+    final maxD = optimistic.toDouble();
+    final range = (maxD - minD).clamp(1.0, double.infinity);
+    final expPct = ((expected - minD) / range).clamp(0.0, 1.0);
+
+    return Column(
+      children: [
+        LayoutBuilder(builder: (ctx, constraints) {
+          final barWidth = constraints.maxWidth;
+          return SizedBox(
+            height: 16,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  top: 3,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(5),
+                    child: Container(
+                      height: 10,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            Colors.purple.withValues(alpha: 0.2),
+                            Colors.purple.withValues(alpha: 0.5),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: (expPct * barWidth - 8).clamp(0, barWidth - 16),
+                  top: 0,
+                  child: Container(
+                    width: 16,
+                    height: 16,
+                    decoration: const BoxDecoration(
+                        color: Colors.purple, shape: BoxShape.circle),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }),
+        const SizedBox(height: 6),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _scenarioLabel('$pessimistic gün', 'Kötümser',
+                Colors.purple.withValues(alpha: 0.6)),
+            _scenarioLabel('$expected gün', 'Beklenen', Colors.purple),
+            _scenarioLabel('$optimistic gün', 'İyimser',
+                Colors.purple.withValues(alpha: 0.6)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _scenarioLabel(String value, String label, Color color) {
+    return Column(
+      children: [
+        Text(value,
+            style: TextStyle(
+                fontSize: 12, fontWeight: FontWeight.bold, color: color)),
+        Text(label, style: TextStyle(fontSize: 10, color: Colors.grey[500])),
+      ],
+    );
+  }
+}
+
+// --- Metodoloji bölümü madde ayracı ---
+class _MethodDivider extends StatelessWidget {
+  const _MethodDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 20),
+      child: Divider(
+        height: 1,
+        thickness: 1,
+        color: Colors.deepPurple.withValues(alpha: 0.08),
+      ),
+    );
+  }
+}
+
+// --- Dairesel halka çizici ---
+class _RingPainter extends CustomPainter {
+  final double progress;
+  final Color color;
+
+  const _RingPainter({required this.progress, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const strokeW = 11.0;
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = (math.min(size.width, size.height) - strokeW) / 2;
+
+    final bgPaint = Paint()
+      ..color = Colors.grey.shade200
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeW
+      ..strokeCap = StrokeCap.round;
+    canvas.drawCircle(center, radius, bgPaint);
+
+    if (progress > 0) {
+      final fgPaint = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = strokeW
+        ..strokeCap = StrokeCap.round;
+
+      canvas.drawArc(
+        Rect.fromCircle(center: center, radius: radius),
+        -math.pi / 2,
+        2 * math.pi * progress,
+        false,
+        fgPaint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_RingPainter old) =>
+      old.progress != progress || old.color != color;
 }

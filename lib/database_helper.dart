@@ -70,6 +70,15 @@ class DatabaseHelper {
     );
   }
 
+  Future<void> batchInsertOrUpdate(List<Map<String, dynamic>> rows) async {
+    final db = await instance.database;
+    final batch = db.batch();
+    for (final row in rows) {
+      batch.insert('daily_usage', row, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    await batch.commit(noResult: true);
+  }
+
   // Tüm satırları tarihe göre azalan sırada döndür
   Future<List<Map<String, dynamic>>> queryAllRows() async {
     final db = await instance.database;
