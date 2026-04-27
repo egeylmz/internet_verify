@@ -1026,7 +1026,7 @@ class _SuggestionPageState extends State<SuggestionPage> {
         quotaMb:    (pkgRow['quota_mb']    as num).toDouble(),
         billingDay: (pkgRow['billing_day'] as num).toInt(),
       );
-      final history = await DatabaseHelper.instance.queryLastNDays(90);
+      final history = await DatabaseHelper.instance.queryLastNDays(180);
       final result  = PredictionService.predict(history, pkg);
       setState(() {
         _packageInfo = pkg;
@@ -1202,6 +1202,8 @@ class _SuggestionPageState extends State<SuggestionPage> {
           _buildDowChart(p),
           const SizedBox(height: 12),
           _buildTrendCard(p),
+          const SizedBox(height: 12),
+          _buildMethodologyCard(p),
           const SizedBox(height: 16),
         ],
       ),
@@ -1314,6 +1316,9 @@ class _SuggestionPageState extends State<SuggestionPage> {
             const SizedBox(height: 8),
             Text('Tahmini bitiş: $dateStr',
                 style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+            const SizedBox(height: 4),
+            Text('Aralık: ${p.scenarioRange}',
+                style: TextStyle(fontSize: 12, color: Colors.grey[500])),
             const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -1454,12 +1459,149 @@ class _SuggestionPageState extends State<SuggestionPage> {
                             : 'Kullanımınız son dönemde istikrarlı seyrediyor.',
                     style: TextStyle(fontSize: 13, color: Colors.grey[600]),
                   ),
+                  if (p.longTermDrift > 1.05 || p.longTermDrift < 0.95) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      p.longTermDrift > 1.05
+                          ? 'Uzun vadeli eğilim: aylık ortalama %${((p.longTermDrift - 1) * 100).toStringAsFixed(0)} artıyor.'
+                          : 'Uzun vadeli eğilim: aylık ortalama %${((1 - p.longTermDrift) * 100).toStringAsFixed(0)} azalıyor.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                    ),
+                  ],
                 ],
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  // --- Tahmin metodolojisi açıklama kartı ---
+  Widget _buildMethodologyCard(PredictionResult p) {
+    final weekdayAvg = p.dowAveragesMB.sublist(0, 5).reduce((a, b) => a + b) / 5;
+    final weekendAvg = p.dowAveragesMB.sublist(5, 7).reduce((a, b) => a + b) / 2;
+    final volatilityGB = p.dailyVolatility / 1024;
+    final volatilityText = volatilityGB >= 0.1
+        ? '±${volatilityGB.toStringAsFixed(2)} GB/gün'
+        : '±${p.dailyVolatility.toStringAsFixed(0)} MB/gün';
+
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: ExpansionTile(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        collapsedShape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        leading: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.indigo.withOpacity(0.1),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(Icons.info_outline_rounded, color: Colors.indigo, size: 20),
+        ),
+        title: const Text(
+          'Tahmin Nasıl Yapıldı?',
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+        ),
+        subtitle: Text(
+          '${p.dataPointCount} günlük veriye dayanıyor',
+          style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+        ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Column(
+              children: [
+                const Divider(height: 1),
+                const SizedBox(height: 12),
+                _buildMethodItem(
+                  icon: Icons.storage_rounded,
+                  color: Colors.indigo,
+                  title: 'Veri Tabanı',
+                  body:
+                      'Son ${p.dataPointCount} günlük kullanım geçmişiniz analiz edildi. '
+                      'Ne kadar uzun süredir uygulama kullanılıyorsa tahmin o kadar güvenilir olur.',
+                ),
+                const SizedBox(height: 12),
+                _buildMethodItem(
+                  icon: Icons.calendar_today_rounded,
+                  color: Colors.blue,
+                  title: 'Haftalık Örüntü',
+                  body:
+                      'Hafta içi ortalama ${(weekdayAvg / 1024).toStringAsFixed(2)} GB/gün, '
+                      'hafta sonu ${(weekendAvg / 1024).toStringAsFixed(2)} GB/gün kullanıyorsunuz. '
+                      'Tahmin her günü ayrı ayrı modelliyor.',
+                ),
+                const SizedBox(height: 12),
+                _buildMethodItem(
+                  icon: Icons.history_rounded,
+                  color: Colors.teal,
+                  title: 'Yakın Dönem Öncelikli',
+                  body:
+                      'Geçmiş verileriniz eşit ağırlıkta değil — son günleriniz daha fazla etkiliyor. '
+                      'Kullanım alışkanlığınız değişirse tahmin buna hızlıca uyum sağlar.',
+                ),
+                const SizedBox(height: 12),
+                _buildMethodItem(
+                  icon: Icons.receipt_long_rounded,
+                  color: Colors.orange,
+                  title: 'Fatura Dönemi Etkisi',
+                  body:
+                      'Dönemin başında, ortasında ve sonunda farklı kullanım davranışı sergiliyorsunuz. '
+                      'Bu örüntü geçmiş dönemlerinizden öğrenilip tahmine yansıtıldı.',
+                ),
+                const SizedBox(height: 12),
+                _buildMethodItem(
+                  icon: Icons.compare_arrows_rounded,
+                  color: Colors.purple,
+                  title: 'Aralık: ${p.scenarioRange}',
+                  body:
+                      'Günlük kullanımınız $volatilityText dalgalanıyor. '
+                      'İyimser senaryoda (daha az kullanım) ${p.daysRemainingOptimistic} gün, '
+                      'kötümser senaryoda (daha fazla kullanım) ${p.daysRemainingPessimistic} gün beklenebilir.',
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMethodItem({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String body,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          margin: const EdgeInsets.only(top: 2),
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, color: color, size: 16),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w600, fontSize: 13)),
+              const SizedBox(height: 3),
+              Text(body,
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600], height: 1.4)),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
