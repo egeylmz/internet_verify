@@ -647,6 +647,7 @@ class _VerifyPageState extends State<VerifyPage> {
   Map<String, dynamic>? _resultData;
   double _driftPercent = 0;
   Color _driftColor = Colors.green;
+  String? _selectedOperator;
   static const Map<String, int> _monthMap = {
     'ocak': 1, 'subat': 2, 'ubat': 2, 'mart': 3, 'nisan': 4,
     'mayis': 5, 'haziran': 6, 'temmuz': 7, 'agustos': 8,
@@ -666,7 +667,30 @@ class _VerifyPageState extends State<VerifyPage> {
     return parts.isEmpty ? "0 KB" : parts.join(", ");
   }
 
+  Future<String?> _showOperatorDialog() {
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Operatör Seçin', style: TextStyle(fontWeight: FontWeight.bold)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: ['Turkcell', 'Türk Telekom', 'Vodafone'].map((op) => ListTile(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            leading: const Icon(Icons.sim_card_outlined),
+            title: Text(op),
+            onTap: () => Navigator.pop(ctx, op),
+          )).toList(),
+        ),
+      ),
+    );
+  }
+
   Future<void> _pickAndProcessPDF() async {
+    final String? operator = await _showOperatorDialog();
+    if (operator == null || !mounted) return;
+    setState(() => _selectedOperator = operator);
+
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
@@ -685,7 +709,13 @@ class _VerifyPageState extends State<VerifyPage> {
 
         if (mounted) {
           if (extractedText.trim().isNotEmpty) {
-            _analyzeOperatorData(extractedText);
+            if (_selectedOperator == 'Türk Telekom') {
+              _analyzeTurkTelekom(extractedText);
+            } else if (_selectedOperator == 'Vodafone') {
+              _analyzeVodafone(extractedText);
+            } else {
+              _analyzeOperatorData(extractedText); // Turkcell
+            }
           } else {
             setState(() => _status = "Hata: PDF'ten metin ayıklanamadı.");
           }
@@ -713,6 +743,155 @@ class _VerifyPageState extends State<VerifyPage> {
       if (normalized.contains(entry.key)) return entry.value;
     }
     return null;
+  }
+
+  void _analyzeVodafone(String rawText) {
+    // Yıl bilgisi Vodafone faturasında satır içinde yok; metinde ara, bulamazsan bugünün yılını kullan
+    final yearMatch = RegExp(r'\b(20[2-9]\d)\b').firstMatch(rawText);
+    final int baseYear = yearMatch != null
+        ? int.parse(yearMatch.group(1)!)
+        : DateTime.now().year;
+
+    // Ay kısaltmaları (normalize edilmiş). Şub → sub; Ş düşerse → ub. Ağu → agu; Ğ düşerse → au.
+    const vodafoneMonthMap = <String, int>{
+      'oca': 1,
+      'sub': 2, 'ub': 2,
+      'mar': 3,
+      'nis': 4,
+      'may': 5,
+      'haz': 6,
+      'tem': 7,
+      'agu': 8, 'au': 8,
+      'eyl': 9,
+      'eki': 10,
+      'kas': 11,
+      'ara': 12,
+    };
+
+    // DDMon HH:MM  Internet  VALUE[boşluk veya satırsonu]UNIT
+    // Gb de gelebilir (örn: 1.31 Gb). dotAll ile \s* satırsonunu da kapsar.
+    // Gerçek format: 15Oca16:15Internet21.69 Mb0.00 (ay ile saat ve Internet arasında boşluk yok)
+    final RegExp dataRegExp = RegExp(
+      r'(\d{2})([A-Za-zĞğŞşİıÇçÖöÜü]{2,3})(\d{2}:\d{2})\s*Internet\s*([\d.]+)\s*(Kb|Mb|Gb)',
+      dotAll: true,
+    );
+
+    final List<Map<String, dynamic>> entries = [];
+
+    for (var match in dataRegExp.allMatches(rawText)) {
+      try {
+        final int day = int.parse(match.group(1)!);
+        final String normMonth = _normalizeMonth(match.group(2)!);
+
+        int? month;
+        for (final e in vodafoneMonthMap.entries) {
+          if (normMonth == e.key) { month = e.value; break; }
+        }
+        if (month == null) continue;
+
+        final String timePart = match.group(3)!;
+        final double value = double.tryParse(match.group(4) ?? '0') ?? 0;
+        if (value == 0) continue;
+        final String unit = match.group(5)!;
+
+        final List<String> tParts = timePart.split(':');
+        final DateTime dt = DateTime(baseYear, month, day, int.parse(tParts[0]), int.parse(tParts[1]));
+
+        final double mb = unit == 'Kb'
+            ? value / 1024.0
+            : unit == 'Gb'
+                ? value * 1024.0
+                : value;
+
+        entries.add({'date': dt, 'mb': mb});
+      } catch (_) { continue; }
+    }
+
+    if (entries.isEmpty) {
+      setState(() => _status = "Eşleşme bulunamadı. PDF formatını kontrol edin.");
+      return;
+    }
+
+    // Aralık-Ocak yıl sınırı: Aralık ayı ve Ocak ayı aynı faturada ise Ocak+... yılı 1 arttır
+    final Set<int> seenMonths = entries.map((e) => (e['date'] as DateTime).month).toSet();
+    if (seenMonths.contains(12) && seenMonths.contains(1)) {
+      for (int i = 0; i < entries.length; i++) {
+        final dt = entries[i]['date'] as DateTime;
+        if (dt.month <= 3) {
+          entries[i] = {
+            'date': DateTime(dt.year + 1, dt.month, dt.day, dt.hour, dt.minute),
+            'mb': entries[i]['mb'],
+          };
+        }
+      }
+    }
+
+    final allDates = entries.map((e) => e['date'] as DateTime);
+    final periodStart = allDates.reduce((a, b) => a.isBefore(b) ? a : b);
+    final periodEnd   = allDates.reduce((a, b) => a.isAfter(b) ? a : b);
+
+    final Map<String, double> dailyOperatorMb = {};
+    for (final entry in entries) {
+      final dt = entry['date'] as DateTime;
+      final key = "${dt.year}-${dt.month.toString().padLeft(2,'0')}-${dt.day.toString().padLeft(2,'0')}";
+      dailyOperatorMb[key] = (dailyOperatorMb[key] ?? 0.0) + (entry['mb'] as double);
+    }
+
+    final double totalPdfMb = dailyOperatorMb.values.fold(0.0, (s, v) => s + v);
+
+    if (totalPdfMb > 0) {
+      _calculateDrift(dailyOperatorMb, totalPdfMb, periodStart, periodEnd);
+    } else {
+      setState(() => _status = "Eşleşme bulunamadı. PDF formatını kontrol edin.");
+    }
+  }
+
+  void _analyzeTurkTelekom(String rawText) {
+    final RegExp dataRegExp = RegExp(
+      r'GPRS\s+internet\.04\s+(\d{2})/(\d{2})/(\d{4})\s+(\d{2}:\d{2}):\d{2}\s+(\d+)',
+    );
+
+    final List<Map<String, dynamic>> entries = [];
+
+    for (var match in dataRegExp.allMatches(rawText)) {
+      try {
+        final int day   = int.parse(match.group(1)!);
+        final int month = int.parse(match.group(2)!);
+        final int year  = int.parse(match.group(3)!);
+        final String timePart = match.group(4)!;
+        final double bytes = double.tryParse(match.group(5) ?? '0') ?? 0;
+
+        final List<String> tParts = timePart.split(':');
+        final DateTime dt = DateTime(year, month, day, int.parse(tParts[0]), int.parse(tParts[1]));
+
+        final double mb = bytes / 1048576.0;
+        entries.add({'date': dt, 'mb': mb});
+      } catch (_) { continue; }
+    }
+
+    if (entries.isEmpty) {
+      setState(() => _status = "Eşleşme bulunamadı. PDF formatını kontrol edin.");
+      return;
+    }
+
+    final allDates = entries.map((e) => e['date'] as DateTime);
+    final periodStart = allDates.reduce((a, b) => a.isBefore(b) ? a : b);
+    final periodEnd   = allDates.reduce((a, b) => a.isAfter(b) ? a : b);
+
+    final Map<String, double> dailyOperatorMb = {};
+    for (final entry in entries) {
+      final dt = entry['date'] as DateTime;
+      final key = "${dt.year}-${dt.month.toString().padLeft(2,'0')}-${dt.day.toString().padLeft(2,'0')}";
+      dailyOperatorMb[key] = (dailyOperatorMb[key] ?? 0.0) + (entry['mb'] as double);
+    }
+
+    final double totalPdfMb = dailyOperatorMb.values.fold(0.0, (s, v) => s + v);
+
+    if (totalPdfMb > 0) {
+      _calculateDrift(dailyOperatorMb, totalPdfMb, periodStart, periodEnd);
+    } else {
+      setState(() => _status = "Eşleşme bulunamadı. PDF formatını kontrol edin.");
+    }
   }
 
   void _analyzeOperatorData(String rawText) {
@@ -832,6 +1011,7 @@ class _VerifyPageState extends State<VerifyPage> {
           'operator': _formatUsage(pdfUsage),
           'device': _formatUsage(effectiveDeviceMb),
           'coverage': activeDays > 0 ? "$activeDays/$totalDays gün" : null,
+          'operatorName': _selectedOperator ?? 'Operatör',
         };
         _status = "Cihaz verisi operatör verisiyle karşılaştırıldı";
       });
@@ -915,7 +1095,7 @@ class _VerifyPageState extends State<VerifyPage> {
 
               // Bilgi Kartları (Aynı Hizada Kart Yapısı)
               _buildModernRow(Icons.calendar_month_rounded, "Analiz Aralığı:", _resultData!['range'], Colors.blue),
-              _buildModernRow(Icons.sensors_rounded, "Operatör Verisi:", _resultData!['operator'], Colors.deepPurple),
+              _buildModernRow(Icons.sensors_rounded, "${_resultData!['operatorName']} Verisi:", _resultData!['operator'], Colors.deepPurple),
               _buildModernRow(Icons.phonelink_ring_rounded, "Cihaz Verisi:", _resultData!['device'], Colors.purple),
               if (_resultData!['coverage'] != null)
                 _buildModernRow(Icons.date_range_rounded, "Takip Kapsamı:", _resultData!['coverage']!, Colors.teal),
