@@ -67,3 +67,6 @@ android/app/build/
 *.kts
 *.bat
 /android
+
+# Secrets — API anahtarları git'e gitmemeli
+lib/secrets.dart

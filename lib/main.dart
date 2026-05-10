@@ -11,6 +11,8 @@ import 'prediction_service.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:google_generative_ai/google_generative_ai.dart';
+import 'secrets.dart';
 
 
 // Splash ekranında önceden çekilen veriyi tutan cache
@@ -20,7 +22,7 @@ class _AppDataCache {
 }
 
 Future<void> _initializeAppData() async {
-  const platform = MethodChannel('com.example.internet_verify');
+  const platform = MethodChannel('com.verifyte.app');
   try {
     // Temel verileri çekme
     final summary = await platform.invokeMethod('getAllUsageData');
@@ -189,6 +191,7 @@ class _MainNavigationState extends State<MainNavigation> {
     const StatisticsPage(),
     const VerifyPage(),
     const SuggestionPage(),
+    const ChatPage(),
   ];
 
   void _onTabTap(int index) {
@@ -230,7 +233,8 @@ class _MainNavigationState extends State<MainNavigation> {
             BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'Özet'),
             BottomNavigationBarItem(icon: Icon(Icons.auto_graph_rounded), label: 'İstatistik'),
             BottomNavigationBarItem(icon: Icon(Icons.fact_check_rounded), label: 'Doğrulama'),
-            BottomNavigationBarItem(icon: Icon(Icons.tips_and_updates_rounded), label: 'Öneri'),
+            BottomNavigationBarItem(icon: Icon(Icons.tips_and_updates_rounded), label: 'Tahmin'),
+            BottomNavigationBarItem(icon: Icon(Icons.smart_toy_rounded), label: 'Asistan'),
           ],
         ),
       ),
@@ -246,7 +250,7 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
-  static const platform = MethodChannel('com.example.internet_verify');
+  static const platform = MethodChannel('com.verifyte.app');
   Map<dynamic, dynamic> _allUsageSummary = {
     '1h_mobile': 0.0, '1h_wifi': 0.0, '1d_mobile': 0.0, '1d_wifi': 0.0,
     '1w_mobile': 0.0, '1w_wifi': 0.0, '1m_mobile': 0.0, '1m_wifi': 0.0,
@@ -2486,4 +2490,426 @@ class _RingPainter extends CustomPainter {
   @override
   bool shouldRepaint(_RingPainter old) =>
       old.progress != progress || old.color != color;
+}
+
+// --- SEKME 5: ASİSTAN ---
+
+class _ChatMessage {
+  final String text;
+  final bool isUser;
+  _ChatMessage({required this.text, required this.isUser});
+}
+
+class ChatPage extends StatefulWidget {
+  const ChatPage({super.key});
+  @override
+  State<ChatPage> createState() => _ChatPageState();
+}
+
+class _ChatPageState extends State<ChatPage> {
+  static const String _apiKey = geminiApiKey;
+
+  final List<_ChatMessage> _messages = [];
+  final TextEditingController _controller = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  bool _isLoading = false;
+  bool _showSuggestions = false;
+  ChatSession? _chatSession;
+  bool _sessionReady = false;
+
+  static const List<String> _suggestions = [
+    'Bu ay ne kadar internet harcadım?',
+    'Kotam ne zaman biter?',
+    'Kullanım eğilimim nasıl gidiyor?',
+    'Bugünkü kullanımım ortalamama göre nasıl?',
+    'Mevcut paketim kullanımıma uygun mu?',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _initChat();
+  }
+
+  Future<void> _initChat() async {
+    final ctx = await _buildContext();
+    final model = GenerativeModel(
+      model: 'gemini-2.5-flash',
+      apiKey: _apiKey,
+      systemInstruction: Content.system(ctx),
+    );
+    _chatSession = model.startChat();
+    if (mounted) setState(() => _sessionReady = true);
+  }
+
+  String _mbStr(double mb) {
+    if (mb >= 1024) return '${(mb / 1024).toStringAsFixed(2)} GB';
+    if (mb <= 0) return '0 MB';
+    return '${mb.toStringAsFixed(0)} MB';
+  }
+
+  Future<String> _buildContext() async {
+    final summary = _AppDataCache.summary;
+    final appList = _AppDataCache.appList;
+    final rows = await DatabaseHelper.instance.queryLastNDays(30);
+    final pkg = await DatabaseHelper.instance.getPackageInfo();
+
+    final buf = StringBuffer();
+    buf.writeln('Sen Verifyte uygulamasının yapay zeka asistanısın.');
+    buf.writeln('YALNIZCA kullanıcının mobil internet kullanımı, WiFi kullanımı, uygulama bazlı veri tüketimi, kota tahmini, fatura analizi ve paket önerisi hakkındaki sorularını Türkçe olarak yanıtla.');
+    buf.writeln('Bu konuların dışındaki sorulara sadece şunu söyle: "Yalnızca internet kullanım verileriniz hakkında yardımcı olabilirim." — başka hiçbir şey ekleme.');
+    buf.writeln('Yanıtlarını açık, kısa ve net tut. Sayısal verileri GB veya MB cinsinden anlaşılır biçimde sun.');
+    buf.writeln('');
+    buf.writeln('=== PAKET ÖNERİSİ KURALLARI ===');
+    buf.writeln('Kullanıcı paketi veya tasarruf hakkında soru sorarsa:');
+    buf.writeln('1. Son 30 günlük günlük verileri kullanarak aylık ortalama mobil kullanımı hesapla.');
+    buf.writeln('2. Ortalama kullanım + %25 tampon = önerilen minimum paket boyutu.');
+    buf.writeln('3. Mevcut paket bu öneriden büyükse tasarruf fırsatı olduğunu belirt.');
+    buf.writeln('4. Türkiye operatörlerinin (Turkcell, Türk Telekom, Vodafone) tipik paket kademelerini referans al:');
+    buf.writeln('   10 GB ≈ 150-175 TL | 20 GB ≈ 220-260 TL | 30 GB ≈ 290-330 TL');
+    buf.writeln('   40 GB ≈ 360-410 TL | 50 GB ≈ 430-480 TL | 100 GB ≈ 600-700 TL');
+    buf.writeln('5. Yaklaşık aylık tasarruf miktarını TL olarak hesapla ve belirt.');
+    buf.writeln('6. Fiyatların yaklaşık olduğunu ve güncel fiyat için operatör sitesinin ziyaret edilmesini öner.');
+    buf.writeln('');
+
+    buf.writeln('=== KULLANICI VERİLERİ ===');
+    if (summary != null) {
+      final m1h  = (summary['1h_mobile']  as num?)?.toDouble() ?? 0;
+      final m1d  = (summary['1d_mobile']  as num?)?.toDouble() ?? 0;
+      final m1w  = (summary['1w_mobile']  as num?)?.toDouble() ?? 0;
+      final m1m  = (summary['1m_mobile']  as num?)?.toDouble() ?? 0;
+      final w1h  = (summary['1h_wifi']    as num?)?.toDouble() ?? 0;
+      final w1d  = (summary['1d_wifi']    as num?)?.toDouble() ?? 0;
+      final w1w  = (summary['1w_wifi']    as num?)?.toDouble() ?? 0;
+      final w1m  = (summary['1m_wifi']    as num?)?.toDouble() ?? 0;
+      buf.writeln('Son 1 saat : ${_mbStr(m1h)} mobil, ${_mbStr(w1h)} WiFi');
+      buf.writeln('Bugün      : ${_mbStr(m1d)} mobil, ${_mbStr(w1d)} WiFi');
+      buf.writeln('Bu hafta   : ${_mbStr(m1w)} mobil, ${_mbStr(w1w)} WiFi');
+      buf.writeln('Bu ay      : ${_mbStr(m1m)} mobil, ${_mbStr(w1m)} WiFi');
+    }
+    buf.writeln('');
+
+    if (appList != null && appList.isNotEmpty) {
+      buf.writeln('=== UYGULAMA BAZLI KULLANIM (son 7 gün, ilk 10) ===');
+      int count = 0;
+      for (final app in appList) {
+        if (count >= 10) break;
+        final name = app['appName'] ?? app['packageName'] ?? 'Bilinmeyen';
+        final mb = (app['totalMb'] as num?)?.toDouble() ?? 0;
+        if (mb > 0) { buf.writeln('- $name: ${_mbStr(mb)}'); count++; }
+      }
+      buf.writeln('');
+    }
+
+    if (rows.isNotEmpty) {
+      buf.writeln('=== SON 30 GÜN GÜNLÜK MOBİL KULLANIM ===');
+      for (final row in rows) {
+        buf.writeln('${row['date']}: ${_mbStr((row['mobile_mb'] as num?)?.toDouble() ?? 0)}');
+      }
+      buf.writeln('');
+    }
+
+    if (pkg != null) {
+      final quota = (pkg['quota_mb'] as num?)?.toDouble() ?? 0;
+      final day   = (pkg['billing_day'] as int?) ?? 1;
+      buf.writeln('=== PAKET BİLGİSİ ===');
+      buf.writeln('Kota: ${_mbStr(quota)}, Fatura günü: her ayın $day\'i');
+    } else {
+      buf.writeln('Paket bilgisi henüz tanımlanmamış.');
+    }
+
+    return buf.toString();
+  }
+
+  Future<void> _sendMessage(String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty || !_sessionReady || _isLoading) return;
+    _controller.clear();
+    setState(() {
+      _messages.add(_ChatMessage(text: trimmed, isUser: true));
+      _isLoading = true;
+      _showSuggestions = false;
+    });
+    _scrollToBottom();
+
+    try {
+      final response = await _chatSession!.sendMessage(Content.text(trimmed));
+      final reply = response.text ?? 'Yanıt alınamadı.';
+      if (mounted) {
+        setState(() {
+          _messages.add(_ChatMessage(text: reply, isUser: false));
+          _isLoading = false;
+          _showSuggestions = true;
+        });
+        _scrollToBottom();
+      }
+    } catch (e) {
+      if (mounted) {
+        debugPrint('[ChatPage] sendMessage error: $e');
+        setState(() {
+          _messages.add(_ChatMessage(text: 'Hata: $e', isUser: false));
+          _isLoading = false;
+          _showSuggestions = true;
+        });
+      }
+    }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      appBar: AppBar(title: const Text('Asistan'), backgroundColor: Colors.transparent),
+      body: Column(
+        children: [
+          Expanded(
+            child: _messages.isEmpty ? _buildEmptyState() : _buildMessageList(),
+          ),
+          _buildInputBar(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.85),
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10)],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF7B61FF).withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.smart_toy_rounded, color: Color(0xFF7B61FF), size: 26),
+                ),
+                const SizedBox(width: 14),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Merhaba!', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                      SizedBox(height: 4),
+                      Text(
+                        'İnternet kullanımın hakkında sana yardımcı olabilirim.',
+                        style: TextStyle(fontSize: 13, color: Colors.black54, height: 1.4),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 28),
+          Text(
+            'HIZLI SORULAR',
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Colors.deepPurple.shade400, letterSpacing: 1.6),
+          ),
+          const SizedBox(height: 14),
+          ..._suggestions.map((s) => _buildSuggestionTile(s)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSuggestionTile(String text) {
+    return GestureDetector(
+      onTap: () => _sendMessage(text),
+      child: Container(
+        width: double.infinity,
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.85),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFF7B61FF).withOpacity(0.25)),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6)],
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.arrow_forward_ios_rounded, size: 13, color: Colors.deepPurple.shade300),
+            const SizedBox(width: 12),
+            Expanded(child: Text(text, style: const TextStyle(fontSize: 14, color: Colors.black87))),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMessageList() {
+    final bool showSugg = _showSuggestions && !_isLoading;
+    final int extra = (_isLoading ? 1 : 0) + (showSugg ? 1 : 0);
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      itemCount: _messages.length + extra,
+      itemBuilder: (ctx, i) {
+        if (i < _messages.length) return _buildBubble(_messages[i]);
+        if (_isLoading && i == _messages.length) return _buildLoadingBubble();
+        return _buildAfterResponseSuggestions();
+      },
+    );
+  }
+
+  Widget _buildAfterResponseSuggestions() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 40, bottom: 10),
+            child: Text(
+              'Başka yardımcı olmamı istediğiniz konu var mı?',
+              style: TextStyle(fontSize: 12.5, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
+            ),
+          ),
+          ..._suggestions.map((s) => Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: _buildSuggestionTile(s),
+          )),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBubble(_ChatMessage msg) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        mainAxisAlignment: msg.isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (!msg.isUser) ...[
+            CircleAvatar(
+              radius: 15,
+              backgroundColor: const Color(0xFF7B61FF).withOpacity(0.12),
+              child: const Icon(Icons.smart_toy_rounded, size: 15, color: Color(0xFF7B61FF)),
+            ),
+            const SizedBox(width: 8),
+          ],
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: msg.isUser ? const Color(0xFF7B61FF) : Colors.white.withOpacity(0.92),
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(18),
+                  topRight: const Radius.circular(18),
+                  bottomLeft: Radius.circular(msg.isUser ? 18 : 4),
+                  bottomRight: Radius.circular(msg.isUser ? 4 : 18),
+                ),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 8, offset: const Offset(0, 2))],
+              ),
+              child: Text(
+                msg.text,
+                style: TextStyle(fontSize: 14, color: msg.isUser ? Colors.white : Colors.black87, height: 1.5),
+              ),
+            ),
+          ),
+          if (msg.isUser) const SizedBox(width: 8),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoadingBubble() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          CircleAvatar(
+            radius: 15,
+            backgroundColor: const Color(0xFF7B61FF).withOpacity(0.12),
+            child: const Icon(Icons.smart_toy_rounded, size: 15, color: Color(0xFF7B61FF)),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.92),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(18), topRight: Radius.circular(18),
+                bottomRight: Radius.circular(18), bottomLeft: Radius.circular(4),
+              ),
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 6)],
+            ),
+            child: const SizedBox(
+              width: 36, height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF7B61FF)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInputBar() {
+    return Container(
+      padding: EdgeInsets.fromLTRB(16, 8, 16, MediaQuery.of(context).padding.bottom + 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.75),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 12, offset: const Offset(0, -2))],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _controller,
+              decoration: InputDecoration(
+                hintText: 'Bir soru sor...',
+                hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 14),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
+                filled: true,
+                fillColor: const Color(0xFFF5F3FF),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              ),
+              onSubmitted: _sendMessage,
+              textInputAction: TextInputAction.send,
+            ),
+          ),
+          const SizedBox(width: 10),
+          GestureDetector(
+            onTap: () => _sendMessage(_controller.text),
+            child: Container(
+              width: 46, height: 46,
+              decoration: const BoxDecoration(color: Color(0xFF7B61FF), shape: BoxShape.circle),
+              child: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
 }
