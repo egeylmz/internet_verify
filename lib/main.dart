@@ -22,12 +22,23 @@ class _AppDataCache {
 Future<void> _initializeAppData() async {
   const platform = MethodChannel('com.example.internet_verify');
   try {
+    // Temel verileri çekme
     final summary = await platform.invokeMethod('getAllUsageData');
     final appList = await platform.invokeMethod('getAppUsageList', {'period': '1d'});
 
     _AppDataCache.summary = summary;
     _AppDataCache.appList = appList;
 
+    // Veritabanı işlemlerini için ayrı görev (logoyu kilitlememesi için)
+    Future.microtask(() => _syncDatabaseInBackground(platform, summary));
+
+  } catch (e) {
+    debugPrint('Splash init hatası: $e');
+  }
+}
+
+Future<void> _syncDatabaseInBackground(MethodChannel platform, dynamic summary) async {
+  try {
     final existingRows = await DatabaseHelper.instance.queryLastNDays(90);
     final rowCount = existingRows.length;
     final nonZeroCount = existingRows.where((r) => ((r['mobile_mb'] as num?) ?? 0) > 0.0).length;
@@ -55,7 +66,7 @@ Future<void> _initializeAppData() async {
       'day_of_week': now.weekday,
     });
   } catch (e) {
-    debugPrint('Splash init hatası: $e');
+    debugPrint('Arka plan veritabanı senkronizasyon hatası: $e');
   }
 }
 
@@ -69,7 +80,7 @@ class DataVerifyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Verifyte', // Başlık güncellendi
+      title: 'Verifyte',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
@@ -97,15 +108,23 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    _start();
+    // Splash ekranı açılır açılmaz logoyu yükleme
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      precacheImage(const AssetImage('assets/icon.webp'), context);
+      _start();
+    });
   }
 
   Future<void> _start() async {
-    // Veri çekme + minimum görünme süresi paralel çalışır
-    await Future.wait([
-      _initializeAppData(),
-      Future.delayed(const Duration(milliseconds: 1500)),
-    ]);
+
+    await Future.delayed(const Duration(milliseconds: 100));
+    
+    _initializeAppData().catchError((e) {
+       debugPrint("Açılış veri hatası: $e");
+    });
+
+    await Future.delayed(const Duration(milliseconds: 1500));
+    
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
@@ -121,22 +140,35 @@ class _SplashScreenState extends State<SplashScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF1C2551),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Image.asset('assets/icon/logo.png', width: 130, height: 130),
-            const SizedBox(height: 48),
-            const SizedBox(
-              width: 28,
-              height: 28,
-              child: CircularProgressIndicator(
-                color: Colors.white54,
-                strokeWidth: 2.5,
-              ),
+      body: Stack(
+        children: [
+          Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Logoyu sabit bir alanda tutma
+                SizedBox(
+                  width: 130,
+                  height: 130,
+                  child: Image.asset(
+                    'assets/icon.webp',
+                    fit: BoxFit.contain,
+                    errorBuilder: (context, error, stackTrace) => const SizedBox(),
+                  ),
+                ),
+                const SizedBox(height: 48),
+                const SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: CircularProgressIndicator(
+                    color: Colors.white54,
+                    strokeWidth: 2.5,
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -234,10 +266,10 @@ class _DashboardPageState extends State<DashboardPage> {
       final bool hasPermission = await platform.invokeMethod('checkPermission');
 
       if (!hasPermission && mounted) {
-        // İzin yoksa kullanıcıya şık bir uyarı göster
+        // İzin uyarısı
         await showDialog(
           context: context,
-          barrierDismissible: false, // İzin verilmeden kapatılamasın
+          barrierDismissible: false,
           builder: (context) => AlertDialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
             title: const Row(
@@ -272,7 +304,6 @@ class _DashboardPageState extends State<DashboardPage> {
   Future<void> _fetchAllData() async {
     setState(() => _isLoading = true);
     try {
-      // Splash ekranında önceden yüklendiyse anında kullan
       if (_AppDataCache.summary != null) {
         setState(() {
           _allUsageSummary = _AppDataCache.summary!;
@@ -859,7 +890,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
       physics: const NeverScrollableScrollPhysics(),
       itemCount: _monthlyData.length,
       itemBuilder: (context, index) {
-        // Listeyi yeniden eskiye göstermek için ters çeviriyoruz
+        // Listeyi ters çevirme
         final dayData = _monthlyData[_monthlyData.length - 1 - index];
         bool isToday = _isSameDay(DateTime.parse(dayData['date']), DateTime.now());
 
@@ -1094,7 +1125,8 @@ class _VerifyPageState extends State<VerifyPage> {
 
   void _analyzeTurkTelekom(String rawText) {
     final RegExp dataRegExp = RegExp(
-      r'GPRS\s+internet\.04\s+(\d{2})/(\d{2})/(\d{4})\s+(\d{2}:\d{2}):\d{2}\s+(\d+)',
+      r'GPRS\s+internet[\d.]*\s+(\d{2})/(\d{2})/(\d{4})\s+(\d{2}:\d{2}):\d{2}\s+(\d+)',
+      caseSensitive: false,
     );
 
     final List<Map<String, dynamic>> entries = [];
@@ -1110,6 +1142,7 @@ class _VerifyPageState extends State<VerifyPage> {
         final List<String> tParts = timePart.split(':');
         final DateTime dt = DateTime(year, month, day, int.parse(tParts[0]), int.parse(tParts[1]));
 
+        // Byte -> MB dönüşümü (1024 * 1024)
         final double mb = bytes / 1048576.0;
         entries.add({'date': dt, 'mb': mb});
       } catch (_) { continue; }
