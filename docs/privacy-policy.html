@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gizlilik Politikası – Verifyte</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f7f8fa;
+      color: #1a1a2e;
+      line-height: 1.7;
+    }
+    header {
+      background: linear-gradient(135deg, #7B61FF 0%, #5a3fd6 100%);
+      color: #fff;
+      padding: 48px 24px 40px;
+      text-align: center;
+    }
+    header h1 { font-size: 2rem; font-weight: 700; margin-bottom: 6px; }
+    header p  { font-size: 0.95rem; opacity: 0.85; }
+    main {
+      max-width: 800px;
+      margin: 40px auto;
+      padding: 0 20px 60px;
+    }
+    section {
+      background: #fff;
+      border-radius: 12px;
+      padding: 32px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+    }
+    h2 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #7B61FF;
+      margin-bottom: 14px;
+    }
+    p { margin-bottom: 12px; }
+    p:last-child { margin-bottom: 0; }
+    ul {
+      padding-left: 20px;
+      margin-bottom: 12px;
+    }
+    li { margin-bottom: 6px; }
+    .badge {
+      display: inline-block;
+      background: #eef0ff;
+      color: #7B61FF;
+      border-radius: 20px;
+      padding: 3px 12px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    a { color: #7B61FF; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    footer {
+      text-align: center;
+      font-size: 0.82rem;
+      color: #888;
+      margin-top: 40px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Verifyte – Gizlilik Politikası</h1>
+  <p>Son güncelleme: 11 Mayıs 2025</p>
+</header>
+
+<main>
+
+  <section>
+    <h2>1. Genel Bakış</h2>
+    <p>
+      Verifyte ("biz", "uygulama"), kullanıcıların mobil veri kullanımını takip etmesine ve operatör faturalarını doğrulamasına yardımcı olan bir Android uygulamasıdır.
+      Bu gizlilik politikası, uygulamanın hangi verileri nasıl topladığını, kullandığını ve sakladığını açıklar.
+    </p>
+    <p>
+      Kişisel kimlik bilgilerinizi (ad, e-posta, telefon numarası vb.) <strong>toplamıyoruz</strong>.
+      Kullanıcı hesabı veya kayıt sistemi <strong>bulunmamaktadır</strong>.
+    </p>
+  </section>
+
+  <section>
+    <h2>2. Toplanan Veriler ve Saklama</h2>
+    <span class="badge">Yalnızca cihazda saklanır</span>
+    <p>Uygulama yalnızca aşağıdaki verileri toplar ve bunların tamamı <strong>cihazınızda yerel olarak</strong> (SQLite veritabanı) saklanır, hiçbir sunucuya gönderilmez:</p>
+    <ul>
+      <li>Günlük mobil veri ve Wi-Fi kullanım miktarları (MB cinsinden)</li>
+      <li>Uygulama bazında veri tüketim istatistikleri</li>
+      <li>Kullanıcı tarafından girilen paket kotası ve fatura gün bilgisi</li>
+    </ul>
+    <p>Bu verileri yalnızca siz görebilirsiniz. Uygulamayı sildiğinizde tüm veriler cihazınızdan kalıcı olarak silinir.</p>
+  </section>
+
+  <section>
+    <h2>3. PDF Fatura Analizi</h2>
+    <span class="badge">Cihazda işlenir</span>
+    <p>
+      Operatör fatura PDF'lerinizi yüklediğinizde, bu dosyalar <strong>tamamen cihazınızda</strong> işlenir.
+      PDF içeriği herhangi bir sunucuya, bulut sistemine veya üçüncü taraf hizmete gönderilmez.
+      Çıkarılan veriler (tarih, kullanım miktarı) yalnızca karşılaştırma amacıyla anlık olarak bellekte kullanılır.
+    </p>
+  </section>
+
+  <section>
+    <h2>4. AI Asistan (Google Gemini)</h2>
+    <span class="badge">İnternet bağlantısı gerektirir</span>
+    <p>
+      Uygulama içindeki <strong>AI Asistan</strong> özelliği, Google'ın Generative AI hizmeti (Gemini) kullanılarak çalışır.
+      Bu özelliği kullandığınızda aşağıdaki bilgiler Google sunucularına iletilir:
+    </p>
+    <ul>
+      <li>Asistana yazdığınız metin mesajı</li>
+      <li>Son 30 güne ait anonim kullanım özeti (toplam MB, en çok veri tüketen uygulamalar, kota ve fatura günü)</li>
+    </ul>
+    <p>
+      Bu veriler arasında kimliğinizi belirleyebilecek hiçbir bilgi (ad, e-posta, telefon numarası, cihaz kimliği vb.) yer almaz.
+      Google'ın kendi gizlilik politikası için:
+      <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">policies.google.com/privacy</a>
+    </p>
+    <p>
+      AI Asistan özelliğini kullanmayı tercih etmiyorsanız bu sekmeyi açmamanız yeterlidir; uygulamanın diğer tüm özellikleri tamamen çevrimdışı çalışır.
+    </p>
+  </section>
+
+  <section>
+    <h2>5. İzinler</h2>
+    <p>Uygulama aşağıdaki Android izinlerini kullanır:</p>
+    <ul>
+      <li><strong>INTERNET</strong> – Yalnızca AI Asistan özelliği için Google Gemini API'sine erişim</li>
+      <li><strong>READ_PHONE_STATE</strong> – Ağ istatistiklerinin alınması (kişisel bilgiye erişim sağlamaz)</li>
+      <li><strong>PACKAGE_USAGE_STATS</strong> – Uygulama bazında veri tüketiminin ölçülmesi</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>6. Üçüncü Taraf Hizmetler ve Reklamlar</h2>
+    <p>
+      Uygulama; reklam ağı, analitik servisi (Google Analytics, Firebase Analytics vb.), kilitlenme izleme (Crashlytics vb.) veya herhangi bir pazarlama/takip aracı <strong>kullanmamaktadır</strong>.
+    </p>
+  </section>
+
+  <section>
+    <h2>7. Çocukların Gizliliği</h2>
+    <p>
+      Uygulama 13 yaşın altındaki çocuklara yönelik değildir ve bu yaş grubundan bilerek veri toplamaz.
+      Eğer bu yaş grubuna ait verinin yanlışlıkla toplandığını düşünüyorsanız lütfen bizimle iletişime geçin.
+    </p>
+  </section>
+
+  <section>
+    <h2>8. Politika Değişiklikleri</h2>
+    <p>
+      Bu politikayı zaman zaman güncelleyebiliriz. Önemli değişiklikler olduğunda bu sayfa güncellenecek ve sayfa başındaki tarih değiştirilecektir.
+      Uygulamayı kullanmaya devam etmeniz güncel politikayı kabul ettiğiniz anlamına gelir.
+    </p>
+  </section>
+
+  <section>
+    <h2>9. İletişim</h2>
+    <p>Gizlilik politikamızla ilgili sorularınız için:</p>
+    <p><strong>E-posta:</strong> <a href="mailto:egeyylmz1@gmail.com">egeyylmz1@gmail.com</a></p>
+  </section>
+
+</main>
+
+<footer>
+  <p>&copy; 2026 Verifyte. Tüm hakları saklıdır.</p>
+</footer>
+
+</body>
+</html>
