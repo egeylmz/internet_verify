@@ -122,6 +122,21 @@ class DatabaseHelper {
     );
   }
 
+  // Birden fazla günün operatör verisini tek batch işlemde güncelle
+  Future<void> batchUpdateOperatorMb(Map<String, double> updates) async {
+    final db = await instance.database;
+    final batch = db.batch();
+    for (final entry in updates.entries) {
+      batch.update(
+        'daily_usage',
+        {'operator_mb': entry.value},
+        where: 'date = ?',
+        whereArgs: [entry.key],
+      );
+    }
+    await batch.commit(noResult: true);
+  }
+
   // Kaç günlük veri var?
   Future<int> getRowCount() async {
     final db = await instance.database;

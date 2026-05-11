@@ -112,7 +112,7 @@ class _SplashScreenState extends State<SplashScreen> {
     super.initState();
     // Splash ekranı açılır açılmaz logoyu yükleme
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      precacheImage(const AssetImage('assets/icon.webp'), context);
+      precacheImage(const AssetImage('assets/icon/logo.png'), context);
       _start();
     });
   }
@@ -153,7 +153,7 @@ class _SplashScreenState extends State<SplashScreen> {
                   width: 130,
                   height: 130,
                   child: Image.asset(
-                    'assets/icon.webp',
+                    'assets/icon/logo.png',
                     fit: BoxFit.contain,
                     errorBuilder: (context, error, stackTrace) => const SizedBox(),
                   ),
@@ -187,11 +187,11 @@ class _MainNavigationState extends State<MainNavigation> {
   final List<int> _history = [];
 
   final List<Widget> _pages = [
-    const DashboardPage(),
-    const StatisticsPage(),
-    const VerifyPage(),
-    const SuggestionPage(),
-    const ChatPage(),
+    const RepaintBoundary(child: DashboardPage()),
+    const RepaintBoundary(child: StatisticsPage()),
+    const RepaintBoundary(child: VerifyPage()),
+    const RepaintBoundary(child: SuggestionPage()),
+    const RepaintBoundary(child: ChatPage()),
   ];
 
   void _onTabTap(int index) {
@@ -200,6 +200,71 @@ class _MainNavigationState extends State<MainNavigation> {
       _history.add(_currentIndex);
       _currentIndex = index;
     });
+  }
+
+  Widget _buildBottomNav() {
+    const icons = [
+      Icons.dashboard_rounded,
+      Icons.auto_graph_rounded,
+      Icons.fact_check_rounded,
+      Icons.tips_and_updates_rounded,
+      Icons.smart_toy_rounded,
+    ];
+    const labels = ['Özet', 'İstatistik', 'Doğrulama', 'Tahmin', 'Asistan'];
+
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF1E1F2E),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        boxShadow: [BoxShadow(color: Color(0x40000000), blurRadius: 20, offset: Offset(0, -4))],
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: List.generate(5, (i) {
+              final isSelected = i == _currentIndex;
+              final color = isSelected ? Colors.white : const Color(0xFF6B7280);
+              return GestureDetector(
+                onTap: () => _onTabTap(i),
+                behavior: HitTestBehavior.opaque,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeInOut,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: isSelected ? const Color(0xFF3949AB) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      AnimatedScale(
+                        scale: isSelected ? 1.1 : 1.0,
+                        duration: const Duration(milliseconds: 200),
+                        child: Icon(icons[i], color: color, size: 24),
+                      ),
+                      const SizedBox(height: 4),
+                      AnimatedDefaultTextStyle(
+                        duration: const Duration(milliseconds: 200),
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: isSelected ? FontWeight.w700 : FontWeight.w400,
+                          color: color,
+                        ),
+                        child: Text(labels[i]),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -212,7 +277,7 @@ class _MainNavigationState extends State<MainNavigation> {
         }
       },
       child: Scaffold(
-        backgroundColor: Colors.transparent,
+        backgroundColor: const Color(0xFF1E1F2E),
         body: Container(
           decoration: const BoxDecoration(
             gradient: LinearGradient(
@@ -223,20 +288,7 @@ class _MainNavigationState extends State<MainNavigation> {
           ),
           child: IndexedStack(index: _currentIndex, children: _pages),
         ),
-        bottomNavigationBar: BottomNavigationBar(
-          currentIndex: _currentIndex,
-          onTap: _onTabTap,
-          selectedItemColor: Colors.indigo,
-          unselectedItemColor: Colors.grey,
-          type: BottomNavigationBarType.fixed,
-          items: const [
-            BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'Özet'),
-            BottomNavigationBarItem(icon: Icon(Icons.auto_graph_rounded), label: 'İstatistik'),
-            BottomNavigationBarItem(icon: Icon(Icons.fact_check_rounded), label: 'Doğrulama'),
-            BottomNavigationBarItem(icon: Icon(Icons.tips_and_updates_rounded), label: 'Tahmin'),
-            BottomNavigationBarItem(icon: Icon(Icons.smart_toy_rounded), label: 'Asistan'),
-          ],
-        ),
+        bottomNavigationBar: _buildBottomNav(),
       ),
     );
   }
@@ -256,6 +308,7 @@ class _DashboardPageState extends State<DashboardPage> {
     '1w_mobile': 0.0, '1w_wifi': 0.0, '1m_mobile': 0.0, '1m_wifi': 0.0,
   };
   List<dynamic> _appUsageList = [];
+  final Map<String, List<dynamic>> _appListCache = {};
   bool _isLoading = false;
   String _selectedPeriod = '1d';
 
@@ -309,56 +362,90 @@ class _DashboardPageState extends State<DashboardPage> {
     setState(() => _isLoading = true);
     try {
       if (_AppDataCache.summary != null) {
-        setState(() {
-          _allUsageSummary = _AppDataCache.summary!;
-          _appUsageList = _AppDataCache.appList ?? [];
-        });
+        final summary = _AppDataCache.summary!;
+        final appList = _AppDataCache.appList ?? [];
+        _appListCache['1d'] = appList;
         _AppDataCache.summary = null;
         _AppDataCache.appList = null;
+        setState(() {
+          _allUsageSummary = summary;
+          _appUsageList = appList;
+        });
         return;
       }
 
-      // Manuel yenileme: tekrar çek
+      // Manuel yenileme: sadece summary ve mevcut period listesi
+      _appListCache.clear();
       final Map<dynamic, dynamic> summary = await platform.invokeMethod('getAllUsageData');
       final List<dynamic> usageList = await platform.invokeMethod('getAppUsageList', {'period': _selectedPeriod});
+      _appListCache[_selectedPeriod] = usageList;
 
       setState(() {
         _allUsageSummary = summary;
         _appUsageList = usageList;
       });
 
-      final existingRows = await DatabaseHelper.instance.queryLastNDays(90);
-      final rowCount = existingRows.length;
-      final nonZeroCount = existingRows.where((r) => ((r['mobile_mb'] as num?) ?? 0) > 0.0).length;
-
-      if (rowCount < 60 || nonZeroCount < 3) {
-        final List<dynamic> history = await platform.invokeMethod('getHistoricalDailyUsage', {'days': 90});
-        final rows = history.map<Map<String, dynamic>>((day) {
-          final String dateStr = day['date'] as String;
-          return {
-            'date': dateStr,
-            'mobile_mb': (day['mobileMB'] as num?)?.toDouble() ?? 0.0,
-            'wifi_mb': (day['wifiMB'] as num?)?.toDouble() ?? 0.0,
-            'day_of_week': _getDayOfWeekFromDate(dateStr),
-          };
-        }).toList();
-        await DatabaseHelper.instance.batchInsertOrUpdate(rows);
-      }
-
-      final now = DateTime.now();
-      final String todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
-      await DatabaseHelper.instance.insertOrUpdate({
-        'date': todayStr,
-        'mobile_mb': _allUsageSummary['1d_mobile'] ?? 0.0,
-        'wifi_mb': _allUsageSummary['1d_wifi'] ?? 0.0,
-        'day_of_week': now.weekday,
-      });
+      // DB sync'i UI'yi bloklamadan arka planda çalıştır
+      _syncDatabaseInBackgroundLocal(summary);
 
     } catch (e) {
       debugPrint("Hata: $e");
     } finally {
       setState(() => _isLoading = false);
     }
+  }
+
+  // Period değişiminde sadece uygulama listesini güncelle
+  Future<void> _fetchAppList() async {
+    if (_appListCache.containsKey(_selectedPeriod)) {
+      setState(() => _appUsageList = _appListCache[_selectedPeriod]!);
+      return;
+    }
+    setState(() => _isLoading = true);
+    try {
+      final List<dynamic> usageList = await platform.invokeMethod('getAppUsageList', {'period': _selectedPeriod});
+      _appListCache[_selectedPeriod] = usageList;
+      if (mounted) setState(() => _appUsageList = usageList);
+    } catch (e) {
+      debugPrint("Uygulama listesi hatası: $e");
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  void _syncDatabaseInBackgroundLocal(Map<dynamic, dynamic> summary) {
+    Future.microtask(() async {
+      try {
+        final existingRows = await DatabaseHelper.instance.queryLastNDays(90);
+        final rowCount = existingRows.length;
+        final nonZeroCount = existingRows.where((r) => ((r['mobile_mb'] as num?) ?? 0) > 0.0).length;
+
+        if (rowCount < 60 || nonZeroCount < 3) {
+          final List<dynamic> history = await platform.invokeMethod('getHistoricalDailyUsage', {'days': 90});
+          final rows = history.map<Map<String, dynamic>>((day) {
+            final String dateStr = day['date'] as String;
+            return {
+              'date': dateStr,
+              'mobile_mb': (day['mobileMB'] as num?)?.toDouble() ?? 0.0,
+              'wifi_mb': (day['wifiMB'] as num?)?.toDouble() ?? 0.0,
+              'day_of_week': _getDayOfWeekFromDate(dateStr),
+            };
+          }).toList();
+          await DatabaseHelper.instance.batchInsertOrUpdate(rows);
+        }
+
+        final now = DateTime.now();
+        final String todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+        await DatabaseHelper.instance.insertOrUpdate({
+          'date': todayStr,
+          'mobile_mb': (summary['1d_mobile'] as num?)?.toDouble() ?? 0.0,
+          'wifi_mb': (summary['1d_wifi'] as num?)?.toDouble() ?? 0.0,
+          'day_of_week': now.weekday,
+        });
+      } catch (e) {
+        debugPrint('Arka plan DB sync hatası: $e');
+      }
+    });
   }
 
   int _getDayOfWeekFromDate(String dateStr) {
@@ -569,7 +656,7 @@ class _DashboardPageState extends State<DashboardPage> {
       children: periods.entries.map((e) => ChoiceChip(
         label: Text(e.value),
         selected: _selectedPeriod == e.key,
-        onSelected: (val) { if(val) { setState(()=> _selectedPeriod = e.key); _fetchAllData(); } },
+        onSelected: (val) { if(val) { setState(()=> _selectedPeriod = e.key); _fetchAppList(); } },
         selectedColor: Colors.indigo.shade100,
         labelStyle: TextStyle(color: _selectedPeriod == e.key ? Colors.indigo : Colors.black87),
       )).toList(),
@@ -578,9 +665,6 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Widget _buildAppCard(dynamic app) {
     final String name = app['appName'] ?? 'Bilinmeyen';
-    final Uint8List? iconData = app['iconBytes'] != null && (app['iconBytes'] as List).isNotEmpty
-        ? Uint8List.fromList(List<int>.from(app['iconBytes']))
-        : null;
     return Card(
       elevation: 0, color: Colors.white, margin: const EdgeInsets.only(bottom: 8),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -625,8 +709,32 @@ class StatisticsPage extends StatefulWidget {
 
 class _StatisticsPageState extends State<StatisticsPage> {
   List<dynamic> _monthlyData = [];
+  List<BarChartGroupData> _barGroups = [];
   bool _isLoading = false;
   int _touchedIndex = -1;
+
+  void _rebuildBarGroups() {
+    _barGroups = _monthlyData.asMap().entries.map((e) {
+      final isTouched = e.key == _touchedIndex;
+      return BarChartGroupData(
+        x: e.key,
+        barRods: [
+          BarChartRodData(
+            toY: e.value['usageMB'] as double,
+            gradient: LinearGradient(
+              colors: isTouched
+                  ? [Colors.amber.shade300, Colors.orange.shade500]
+                  : [Colors.blue.shade300, Colors.deepPurple.shade400],
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+            ),
+            width: isTouched ? 5 : 3,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+          ),
+        ],
+      );
+    }).toList();
+  }
 
   @override
   void initState() {
@@ -680,6 +788,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
       if (mounted) {
         setState(() {
           _monthlyData = last90Days;
+          _rebuildBarGroups();
         });
       }
     } catch (e) {
@@ -782,6 +891,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
                 touchCallback: (event, response) {
                   setState(() {
                     _touchedIndex = (response?.spot != null) ? response!.spot!.touchedBarGroupIndex : -1;
+                    _rebuildBarGroups();
                   });
                 },
                 touchTooltipData: BarTouchTooltipData(
@@ -861,26 +971,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
                 ),
               ),
               borderData: FlBorderData(show: false),
-              barGroups: _monthlyData.asMap().entries.map((e) {
-                final isTouched = e.key == _touchedIndex;
-                return BarChartGroupData(
-                  x: e.key,
-                  barRods: [
-                    BarChartRodData(
-                      toY: e.value['usageMB'] as double,
-                      gradient: LinearGradient(
-                        colors: isTouched
-                            ? [Colors.amber.shade300, Colors.orange.shade500]
-                            : [Colors.blue.shade300, Colors.deepPurple.shade400],
-                        begin: Alignment.bottomCenter,
-                        end: Alignment.topCenter,
-                      ),
-                      width: isTouched ? 5 : 3,
-                      borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
-                    ),
-                  ],
-                );
-              }).toList(),
+              barGroups: _barGroups,
             ),
           ),
         ),
@@ -929,6 +1020,8 @@ class _VerifyPageState extends State<VerifyPage> {
   double _driftPercent = 0;
   Color _driftColor = Colors.green;
   String? _selectedOperator;
+  List<Map<String, dynamic>> _dailyDeviations = [];
+  bool _showDetails = false;
   static const Map<String, int> _monthMap = {
     'ocak': 1, 'subat': 2, 'ubat': 2, 'mart': 3, 'nisan': 4,
     'mayis': 5, 'haziran': 6, 'temmuz': 7, 'agustos': 8,
@@ -1252,20 +1345,29 @@ class _VerifyPageState extends State<VerifyPage> {
       int activeDays = 0;
       final int totalDays = rows.length;
 
+      final Map<String, double> batchUpdates = {};
+      final List<Map<String, dynamic>> dailyDeviations = [];
       for (var row in rows) {
         final double devMb = (row['mobile_mb'] as num?)?.toDouble() ?? 0.0;
         final String dateKey = row['date'] as String;
         final double opMb = dailyOperatorMb[dateKey] ?? 0.0;
 
-        // Write actual daily operator value to DB for statistics view
-        await DatabaseHelper.instance.updateOperatorMb(dateKey, opMb);
+        batchUpdates[dateKey] = opMb;
 
         if (devMb > 0) {
           deviceTotalMb += devMb;
           filteredOperatorMb += opMb;
           activeDays++;
+          dailyDeviations.add({
+            'date': dateKey,
+            'devMb': devMb,
+            'opMb': opMb,
+            'deltaMb': devMb - opMb,
+          });
         }
       }
+      dailyDeviations.sort((a, b) => (b['deltaMb'] as double).abs().compareTo((a['deltaMb'] as double).abs()));
+      await DatabaseHelper.instance.batchUpdateOperatorMb(batchUpdates);
 
       // If no active days, fall back to full-period comparison
       final double effectivePdfMb = activeDays > 0 ? filteredOperatorMb : totalPdfMb;
@@ -1289,6 +1391,8 @@ class _VerifyPageState extends State<VerifyPage> {
       setState(() {
         _driftPercent = drift;
         _driftColor = dColor;
+        _dailyDeviations = dailyDeviations;
+        _showDetails = false;
         _resultData = {
           'range': rangeStr,
           'operator': _formatUsage(pdfUsage),
@@ -1475,6 +1579,7 @@ class _VerifyPageState extends State<VerifyPage> {
         _buildModernRow(Icons.phonelink_ring_rounded, "Cihaz Verisi:", _resultData!['device'], Colors.purple),
         if (_resultData!['coverage'] != null)
           _buildModernRow(Icons.date_range_rounded, "Takip Kapsamı:", _resultData!['coverage']!, Colors.teal),
+        if (_dailyDeviations.isNotEmpty) _buildDetailSection(),
         const SizedBox(height: 8),
         TextButton.icon(
           onPressed: _pickAndProcessPDF,
@@ -1483,6 +1588,126 @@ class _VerifyPageState extends State<VerifyPage> {
               style: TextStyle(color: Colors.deepPurple.shade400, fontSize: 13)),
         ),
       ],
+    );
+  }
+
+  Widget _buildDetailSection() {
+    final List<String> monthNames = ["", "Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
+
+    String fmtMb(double mb) {
+      if (mb.abs() >= 1024) return '${(mb / 1024).toStringAsFixed(2)} GB';
+      return '${mb.toStringAsFixed(1)} MB';
+    }
+
+    String fmtDate(String dateStr) {
+      try {
+        final d = DateTime.parse(dateStr);
+        return "${d.day} ${monthNames[d.month]}";
+      } catch (_) { return dateStr; }
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(15),
+        boxShadow: [const BoxShadow(color: Color(0x08000000), blurRadius: 10)],
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(15),
+            onTap: () => setState(() => _showDetails = !_showDetails),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.indigo.withAlpha(25),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(Icons.format_list_bulleted_rounded, color: Colors.indigo.shade400, size: 22),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text("Günlük Sapma Detayı",
+                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+                        Text("${_dailyDeviations.length} gün karşılaştırıldı",
+                            style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
+                      ],
+                    ),
+                  ),
+                  Icon(
+                    _showDetails ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                    color: Colors.grey.shade400,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_showDetails) ...[
+            Divider(height: 1, color: Colors.grey.shade100),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Row(
+                children: [
+                  SizedBox(width: 52, child: Text("Tarih", style: TextStyle(fontSize: 10, color: Colors.grey.shade400, fontWeight: FontWeight.w600))),
+                  Expanded(child: Text("Operatör", style: TextStyle(fontSize: 10, color: Colors.grey.shade400, fontWeight: FontWeight.w600), textAlign: TextAlign.center)),
+                  Expanded(child: Text("Cihaz", style: TextStyle(fontSize: 10, color: Colors.grey.shade400, fontWeight: FontWeight.w600), textAlign: TextAlign.center)),
+                  SizedBox(width: 70, child: Text("Fark", style: TextStyle(fontSize: 10, color: Colors.grey.shade400, fontWeight: FontWeight.w600), textAlign: TextAlign.right)),
+                ],
+              ),
+            ),
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _dailyDeviations.length,
+              itemBuilder: (context, i) {
+                final row = _dailyDeviations[i];
+                final double delta = row['deltaMb'] as double;
+                final bool isOver = delta > 0;
+                final Color deltaColor = delta.abs() < 5
+                    ? Colors.grey.shade400
+                    : isOver ? Colors.orange.shade600 : Colors.blue.shade400;
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: i.isEven ? Colors.grey.shade50 : Colors.white,
+                  ),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 52,
+                        child: Text(fmtDate(row['date'] as String),
+                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.black87)),
+                      ),
+                      Expanded(child: Text(
+                          (row['opMb'] as double) > 0 ? fmtMb(row['opMb'] as double) : '—',
+                          style: TextStyle(fontSize: 11, color: (row['opMb'] as double) > 0 ? Colors.grey.shade600 : Colors.grey.shade400), textAlign: TextAlign.center)),
+                      Expanded(child: Text(fmtMb(row['devMb'] as double),
+                          style: TextStyle(fontSize: 11, color: Colors.grey.shade600), textAlign: TextAlign.center)),
+                      SizedBox(
+                        width: 70,
+                        child: Text(
+                          "${isOver ? '+' : ''}${fmtMb(delta)}",
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: deltaColor),
+                          textAlign: TextAlign.right,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ],
+      ),
     );
   }
 
