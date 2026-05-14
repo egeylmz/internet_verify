@@ -99,6 +99,17 @@ class DatabaseHelper {
     );
   }
 
+  // Belirtilen tarihten sonraki kayıtları artan sırada döndür (Firebase delta sync için)
+  Future<List<Map<String, dynamic>>> queryAfterDate(String afterDate) async {
+    final db = await instance.database;
+    return await db.query(
+      'daily_usage',
+      where: 'date > ?',
+      whereArgs: [afterDate],
+      orderBy: 'date ASC',
+    );
+  }
+
   // Belirli tarih aralığındaki kayıtları artan sırada döndür (doğrulama için)
   Future<List<Map<String, dynamic>>> queryByDateRange(
       String startDate, String endDate) async {

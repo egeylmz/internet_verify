@@ -12,6 +12,8 @@ import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_service.dart';
 import 'secrets.dart';
 
 
@@ -67,12 +69,17 @@ Future<void> _syncDatabaseInBackground(MethodChannel platform, dynamic summary) 
       'wifi_mb': (summary['1d_wifi'] as num?)?.toDouble() ?? 0.0,
       'day_of_week': now.weekday,
     });
+
+    // SQLite dolduktan sonra Firebase'e gönder (consent varsa)
+    await FirebaseService.instance.syncUsageData();
   } catch (e) {
     debugPrint('Arka plan veritabanı senkronizasyon hatası: $e');
   }
 }
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
   runApp(const DataVerifyApp());
 }
 
@@ -118,24 +125,37 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _start() async {
-
     await Future.delayed(const Duration(milliseconds: 100));
-    
+
     _initializeAppData().catchError((e) {
-       debugPrint("Açılış veri hatası: $e");
+      debugPrint("Açılış veri hatası: $e");
     });
 
+    final onboardingDone = await FirebaseService.instance.isOnboardingDone();
+
     await Future.delayed(const Duration(milliseconds: 1500));
-    
+
     if (!mounted) return;
-    Navigator.of(context).pushReplacement(
-      PageRouteBuilder(
-        pageBuilder: (_, __, ___) => const MainNavigation(),
-        transitionsBuilder: (_, anim, __, child) =>
-            FadeTransition(opacity: anim, child: child),
-        transitionDuration: const Duration(milliseconds: 500),
-      ),
-    );
+
+    if (!onboardingDone) {
+      Navigator.of(context).pushReplacement(
+        PageRouteBuilder(
+          pageBuilder: (_, __, ___) => const OnboardingScreen(),
+          transitionsBuilder: (_, anim, __, child) =>
+              FadeTransition(opacity: anim, child: child),
+          transitionDuration: const Duration(milliseconds: 500),
+        ),
+      );
+    } else {
+      Navigator.of(context).pushReplacement(
+        PageRouteBuilder(
+          pageBuilder: (_, __, ___) => const MainNavigation(),
+          transitionsBuilder: (_, anim, __, child) =>
+              FadeTransition(opacity: anim, child: child),
+          transitionDuration: const Duration(milliseconds: 500),
+        ),
+      );
+    }
   }
 
   @override
@@ -171,6 +191,173 @@ class _SplashScreenState extends State<SplashScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class OnboardingScreen extends StatefulWidget {
+  const OnboardingScreen({super.key});
+  @override
+  State<OnboardingScreen> createState() => _OnboardingScreenState();
+}
+
+class _OnboardingScreenState extends State<OnboardingScreen> {
+  bool _consent = false;
+  bool _loading = false;
+
+  Future<void> _continue() async {
+    setState(() => _loading = true);
+    await FirebaseService.instance.setConsent(_consent);
+    await FirebaseService.instance.setOnboardingDone();
+    if (_consent) {
+      await FirebaseService.instance.signInAnonymously();
+      // Consent splash'taki background sync'ten sonra verildiği için
+      // burada açıkça tetikle; aksi halde ilk yazma sonraki açılışa kalır.
+      FirebaseService.instance.syncUsageData();
+    }
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        pageBuilder: (_, __, ___) => const MainNavigation(),
+        transitionsBuilder: (_, anim, __, child) =>
+            FadeTransition(opacity: anim, child: child),
+        transitionDuration: const Duration(milliseconds: 400),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF1C2551),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 16),
+              Center(
+                child: Image.asset('assets/icon/logo.png', width: 72, height: 72),
+              ),
+              const SizedBox(height: 32),
+              const Text(
+                'Verifyte\'e\nHoş Geldin',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  height: 1.2,
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Verifyte, mobil veri kullanımını operatör faturanla karşılaştırarak sapmaları tespit eder.',
+                style: TextStyle(color: Colors.white70, fontSize: 15, height: 1.5),
+              ),
+              const SizedBox(height: 40),
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.07),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white12),
+                ),
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.science_outlined, color: Color(0xFF7B61FF), size: 20),
+                        SizedBox(width: 8),
+                        Text(
+                          'Akademik Veri Katkısı',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 15,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Anonim mobil veri kullanım istatistiklerin (günlük MB, haftanın günü) akademik araştırma amacıyla güvenli şekilde paylaşılabilir. Kişisel bilgi toplanmaz.',
+                      style: TextStyle(color: Colors.white60, fontSize: 13, height: 1.5),
+                    ),
+                    const SizedBox(height: 16),
+                    InkWell(
+                      onTap: () => setState(() => _consent = !_consent),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Row(
+                        children: [
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            width: 22,
+                            height: 22,
+                            decoration: BoxDecoration(
+                              color: _consent ? const Color(0xFF7B61FF) : Colors.transparent,
+                              border: Border.all(
+                                color: _consent ? const Color(0xFF7B61FF) : Colors.white38,
+                                width: 2,
+                              ),
+                              borderRadius: BorderRadius.circular(5),
+                            ),
+                            child: _consent
+                                ? const Icon(Icons.check, color: Colors.white, size: 14)
+                                : null,
+                          ),
+                          const SizedBox(width: 12),
+                          const Expanded(
+                            child: Text(
+                              'Anonim kullanım verilerimi araştırma amacıyla paylaşmayı kabul ediyorum',
+                              style: TextStyle(color: Colors.white70, fontSize: 13),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: ElevatedButton(
+                  onPressed: _loading ? null : _continue,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF7B61FF),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    elevation: 0,
+                  ),
+                  child: _loading
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                        )
+                      : const Text(
+                          'Başla',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Center(
+                child: TextButton(
+                  onPressed: _loading ? null : _continue,
+                  child: const Text(
+                    'Atla',
+                    style: TextStyle(color: Colors.white38, fontSize: 13),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -301,7 +488,7 @@ class DashboardPage extends StatefulWidget {
   State<DashboardPage> createState() => _DashboardPageState();
 }
 
-class _DashboardPageState extends State<DashboardPage> {
+class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserver {
   static const platform = MethodChannel('com.verifyte.app');
   Map<dynamic, dynamic> _allUsageSummary = {
     '1h_mobile': 0.0, '1h_wifi': 0.0, '1d_mobile': 0.0, '1d_wifi': 0.0,
@@ -311,11 +498,31 @@ class _DashboardPageState extends State<DashboardPage> {
   final Map<String, List<dynamic>> _appListCache = {};
   bool _isLoading = false;
   String _selectedPeriod = '1d';
+  bool _awaitingPermissionGrant = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _checkAndRequestPermission().then((_) => _fetchAllData());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Kullanıcı Ayarlar'dan PACKAGE_USAGE_STATS iznini verip döndüğünde yakala:
+    // resume'da izin artık varsa veriyi yeniden çek (bu da Firebase sync'i tetikler).
+    if (state == AppLifecycleState.resumed && _awaitingPermissionGrant) {
+      _awaitingPermissionGrant = false;
+      platform.invokeMethod('checkPermission').then((granted) {
+        if (granted == true && mounted) _fetchAllData();
+      }).catchError((_) {});
+    }
   }
 
   Future<void> _checkAndRequestPermission() async {
@@ -343,6 +550,7 @@ class _DashboardPageState extends State<DashboardPage> {
             actions: [
               TextButton(
                 onPressed: () async {
+                  _awaitingPermissionGrant = true;
                   await platform.invokeMethod('openSettings');
                   if (mounted) Navigator.pop(context);
                 },
@@ -442,6 +650,11 @@ class _DashboardPageState extends State<DashboardPage> {
           'wifi_mb': (summary['1d_wifi'] as num?)?.toDouble() ?? 0.0,
           'day_of_week': now.weekday,
         });
+
+        // Splash'taki sync izin verilmeden çalıştığı için SQLite 0'larla dolmuş
+        // olabilir. İzin sonrası gerçek veri geldiğinde Firestore'a göndermeyi
+        // burada tetikliyoruz — aksi halde ilk yazma sonraki açılışa kalır.
+        await FirebaseService.instance.syncUsageData();
       } catch (e) {
         debugPrint('Arka plan DB sync hatası: $e');
       }

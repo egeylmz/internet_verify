@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "758972012360",
+    "project_id": "verifyte-57734",
+    "storage_bucket": "verifyte-57734.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:758972012360:android:a0d148a9f12ddf05e5057d",
+        "android_client_info": {
+          "package_name": "com.verifyte.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAF9nh37jt8yEKhmww-kc9vZqif576oCgk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -27,6 +27,7 @@ migrate_working_dir/
 **/doc/api/
 **/ios/Flutter/.last_build_id
 .dart_tool/
+.flutter-plugins
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
@@ -39,34 +40,24 @@ app.*.symbols
 # Obfuscation related
 app.*.map.json
 
-# Android Studio will place build artifacts here
+# Android Studio build artifacts
 /android/app/debug
 /android/app/profile
 /android/app/release
+**/android/.gradle/
+**/android/captures/
+**/android/app/build/
+android/build/
 
-# Android build and cache
-.gradle/
-build/
-android/.gradle/
-android/app/build/
-*.keystore
+# Android — local & generated files
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+android/key.properties
+
+# İmza dosyaları (signing keys)
 *.jks
-*.java
-*.xml
-*.webp
-*.bin
-*.jar
-*.kotlin_module
-*.kt
-*.marker
-*.lock
-*.png
-*.aidl
-*.TAG
-*.receipt
-*.kts
-*.bat
-/android
+*.keystore
 
-# Secrets — API anahtarları git'e gitmemeli
-lib/secrets.dart
+# Build/test log dosyaları
+build_log*.txt
+test_log*.txt
