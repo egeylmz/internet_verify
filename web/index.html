@@ -1,46 +1,321 @@
 <!DOCTYPE html>
-<html>
+<html lang="tr">
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verifyte - Veri Doğrulama ve Tarife Öneri Uygulaması</title>
+    <style>
+        /* Verifyte Tema Renkleri */
+        :root {
+            --primary-color: #6366f1;
+            --secondary-color: #8b5cf6;
+            --text-dark: #1f2937;
+            --bg-light: #f8fafc;
+            --accent-green: #10b981;
+        }
 
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
+        html {
+            scroll-behavior: smooth;
+        }
 
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            color: var(--text-dark);
+            background-color: #ffffff;
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
 
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
-  <base href="$FLUTTER_BASE_HREF">
+        /* Navigasyon / Üst Menü */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 10%;
+            background-color: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 2px 15px rgba(0,0,0,0.05);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
 
-  <meta charset="UTF-8">
-  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+        .logo {
+            font-size: 28px;
+            font-weight: 800;
+            background: linear-gradient(to right, var(--primary-color), var(--secondary-color));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-decoration: none;
+            letter-spacing: -0.5px;
+        }
 
-  <!-- iOS meta tags & icons -->
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="internet_verify">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+        nav {
+            display: flex;
+            gap: 25px;
+        }
 
-  <!-- Favicon -->
-  <link rel="icon" type="image/png" href="favicon.png"/>
+        .nav-link {
+            color: var(--text-dark);
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.95rem;
+            transition: color 0.3s;
+        }
 
-  <title>internet_verify</title>
-  <link rel="manifest" href="manifest.json">
+        .nav-link:hover {
+            color: var(--primary-color);
+        }
+
+        /* Karşılama (Hero) Alanı */
+        .hero {
+            padding: 100px 10% 80px;
+            background: linear-gradient(135deg, #f0f4ff 0%, #ffffff 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .hero-content {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            max-width: 1200px;
+            width: 100%;
+            gap: 50px;
+        }
+
+        .hero-text-block {
+            flex: 1;
+            text-align: left;
+        }
+
+        .hero h1 {
+            font-size: 3rem;
+            margin-bottom: 20px;
+            line-height: 1.1;
+            color: var(--text-dark);
+            background: linear-gradient(to right, var(--primary-color), var(--secondary-color));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero p {
+            font-size: 1.25rem;
+            color: #4b5563;
+            margin-bottom: 40px;
+        }
+
+        .hero-image-block {
+            flex: 1;
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        .hero-overview-image {
+            max-width: 100%;
+            height: auto;
+            border-radius: 12px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+        }
+
+        .btn-primary {
+            display: inline-block;
+            background-color: var(--primary-color);
+            color: white;
+            padding: 15px 30px;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: background-color 0.3s ease, transform 0.2s ease;
+        }
+
+        .btn-primary:hover {
+            background-color: var(--secondary-color);
+            transform: translateY(-2px);
+        }
+
+        /* Adım Adım Özellikler */
+        .app-steps {
+            padding: 60px 10%;
+        }
+
+        .step-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 100px;
+            gap: 50px;
+        }
+
+        .step-row:nth-child(even) {
+            flex-direction: row-reverse;
+        }
+
+        .step-text {
+            flex: 1;
+        }
+
+        .step-text h2 {
+            font-size: 2.2rem;
+            margin-bottom: 20px;
+            color: var(--primary-color);
+        }
+
+        .step-text p {
+            font-size: 1.15rem;
+            color: #4b5563;
+            margin-bottom: 15px;
+        }
+
+        .step-image-container {
+            flex: 1;
+            text-align: center;
+        }
+
+        .app-screenshot {
+            width: 280px;
+            border-radius: 35px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            border: 8px solid #f3f4f6;
+            transition: transform 0.3s ease;
+        }
+
+        .app-screenshot:hover {
+            transform: translateY(-10px);
+        }
+
+        /* Responsive */
+        @media (max-width: 992px) {
+            header { flex-direction: column; gap: 15px; }
+            .hero-content { flex-direction: column; text-align: center; gap: 30px; }
+            .hero-text-block { text-align: center; }
+            .hero-image-block { justify-content: center; }
+            .hero h1 { font-size: 2.5rem; }
+            .step-row, .step-row:nth-child(even) { flex-direction: column; text-align: center; }
+        }
+    </style>
 </head>
 <body>
-  <!--
-    You can customize the "flutter_bootstrap.js" script.
-    This is useful to provide a custom configuration to the Flutter loader
-    or to give the user feedback during the initialization process.
 
-    For more details:
-    * https://docs.flutter.dev/platform-integration/web/initialization
-  -->
-  <script src="flutter_bootstrap.js" async></script>
+<header>
+    <a href="#" class="logo">Verifyte</a>
+    <nav>
+        <a href="#nasil-calisir" class="nav-link">Nasıl Çalışır?</a>
+        <a href="#neden-verifyte" class="nav-link">Neden Verifyte?</a>
+        <a href="#sss" class="nav-link">SSS</a>
+    </nav>
+</header>
+
+<section class="hero" id="hero">
+    <div class="hero-content">
+        <div class="hero-text-block">
+            <h1>Sürpriz Fatura Şokuna Son! Operatörün mü Haklı Sen mi?</h1>
+            <p>Verifyte, Android veri ölçümlerini operatör faturanla karşılaştırır. Kayıp verileri tespit eder, LSTM destekli AI ile internetinin ne zaman biteceğini tahmin eder.</p>
+            <div class="hero-actions">
+                <a href="#nasil-calisir" class="btn-primary">Uygulamayı Keşfet</a>
+            </div>
+        </div>
+        <div class="hero-image-block">
+            <img src="Unknown.jpeg" alt="Verifyte Uygulama Özeti" class="hero-overview-image">
+        </div>
+    </div>
+</section>
+
+<section id="nasil-calisir" class="app-steps">
+    <div class="step-row">
+        <div class="step-text">
+            <h2>1. Anlık Kullanım Takibi</h2>
+            <p><strong>Özet Ekranı</strong> ile Wi-Fi ve Mobil veri dengenizi takip edin. En çok veri harcayan uygulamaları anında tespit edin.</p>
+        </div>
+        <div class="step-image-container">
+            <img src="Screenshot_2026-05-11-15-05-27-644_com.verifyte.app.jpg" class="app-screenshot" alt="Özet Ekranı">
+        </div>
+    </div>
+
+    <div class="step-row">
+        <div class="step-text">
+            <h2>2. Detaylı Geçmiş Analizi</h2>
+            <p><strong>İstatistik Ekranı</strong> ile kullanım alışkanlıklarınızı geriye dönük inceleyin. 90 günlük grafik analizleriyle kendi trendinizi keşfedin.</p>
+        </div>
+        <div class="step-image-container">
+            <img src="Screenshot_2026-05-11-15-05-32-176_com.verifyte.app.jpg" class="app-screenshot" alt="İstatistik Ekranı">
+        </div>
+    </div>
+
+    <div class="step-row">
+        <div class="step-text">
+            <h2>3. Operatör Doğrulaması</h2>
+            <p>Uygulamanın kalbi <strong>Doğrulama Ekranı</strong>. Faturanızı yükleyin, cihaz verisiyle karşılaştırıp sapmaları saptayalım.</p>
+        </div>
+        <div class="step-image-container">
+            <img src="Screenshot_2026-05-11-15-05-36-949_com.verifyte.app.jpg" class="app-screenshot" alt="Doğrulama Ekranı">
+        </div>
+    </div>
+
+    <div class="step-row">
+        <div class="step-text">
+            <h2>4. Akıllı Gelecek Tahmini</h2>
+            <p><strong>Tahmin Ekranı</strong> ile LSTM tabanlı AI modelimiz, paketinizin kaç gün daha yeteceğini size önceden söyler.</p>
+        </div>
+        <div class="step-image-container">
+            <img src="Screenshot_2026-05-11-15-05-45-429_com.verifyte.app.jpg" class="app-screenshot" alt="Tahmin Ekranı">
+        </div>
+    </div>
+
+    <div class="step-row">
+        <div class="step-text">
+            <h2>5. Yapay Zeka Asistanı</h2>
+            <p>Veriler içinde kaybolmak istemiyorsanız <strong>Asistan Ekranı</strong> size yardımcı olsun. Kişiselleştirilmiş tavsiyeler alın.</p>
+        </div>
+        <div class="step-image-container">
+            <img src="Screenshot_2026-05-11-15-05-48-064_com.verifyte.app.jpg" class="app-screenshot" alt="Asistan Ekranı">
+        </div>
+    </div>
+</section>
+
+<section id="neden-verifyte" style="padding: 100px 10%; background-color: #f0f4ff;">
+    <h2 style="text-align: center; font-size: 2.5rem; margin-bottom: 50px;">Neden Verifyte?</h2>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 30px;">
+        <div style="background: white; padding: 40px; border-radius: 20px; box-shadow: 0 10px 20px rgba(0,0,0,0.05);">
+            <h3 style="color: var(--primary-color);">Tasarruf Edin</h3>
+            <p>Kişisel kullanım alışkanlıklarınızı analiz ederek bütçenize en uygun paketi seçmenizi sağlar ve tasarruf ettirir.</p>
+        </div>
+        <div style="background: white; padding: 40px; border-radius: 20px; box-shadow: 0 10px 20px rgba(0,0,0,0.05);">
+            <h3 style="color: var(--primary-color);">Haklarınızı Koruyun</h3>
+            <p>Faturalama hatalarını tespit ederek tüketici haklarını korur ve dijital okuryazarlığı artırır.</p>
+        </div>
+        <div style="background: white; padding: 40px; border-radius: 20px; box-shadow: 0 10px 20px rgba(0,0,0,0.05);">
+            <h3 style="color: var(--primary-color);">Şeffaf Takip</h3>
+            <p>Operatör verisi ile cihaz verisi arasındaki farkı şeffafça göstererek net bir takip sunar.</p>
+        </div>
+    </div>
+</section>
+
+<section id="sss" style="padding: 100px 10%;">
+    <h2 style="text-align: center; font-size: 2.5rem; margin-bottom: 50px;">Sıkça Sorulan Sorular</h2>
+    <div style="max-width: 850px; margin: 0 auto;">
+        <div style="margin-bottom: 35px; border-bottom: 1px solid #e2e8f0; padding-bottom: 25px;">
+            <h4 style="font-size: 1.25rem; color: var(--text-dark); margin-bottom: 10px;">Hangi operatörleri destekliyor?</h4>
+            <p style="color: #64748b;">Turkcell, Vodafone ve Türk Telekom operatörleriyle tam uyumlu çalışacak şekilde tasarlanmıştır.</p>
+        </div>
+        <div style="margin-bottom: 35px; border-bottom: 1px solid #e2e8f0; padding-bottom: 25px;">
+            <h4 style="font-size: 1.25rem; color: var(--text-dark); margin-bottom: 10px;">Veri ölçümleri ne kadar güvenilir?</h4>
+            <p style="color: #64748b;">NetworkStats Manager ve özel D-UPI algoritmamız sayesinde cihaz verileri %100 doğrulukla işlenmektedir.</p>
+        </div>
+        <div style="margin-bottom: 35px; border-bottom: 1px solid #e2e8f0; padding-bottom: 25px;">
+            <h4 style="font-size: 1.25rem; color: var(--text-dark); margin-bottom: 10px;">Verifyte kimin projesidir?</h4>
+            <p style="color: #64748b;">İzmir Ekonomi Üniversitesi öğrencileri Ecem Doğaner, İdil Sanem Gürsoy, Ege Yılmaz ve Mehmet Karahan tarafından geliştirilmiştir.</p>
+        </div>
+    </div>
+</section>
+
+<footer style="text-align: center; padding: 40px 20px; background-color: var(--text-dark); color: #9ca3af;">
+    <div style="font-size: 0.95rem; margin-bottom: 15px; color: #e5e7eb; font-weight: 500;">İzmir Ekonomi Üniversitesi - Bitirme Projesi</div>
+    <p>&copy; 2026 Verifyte Ekibi. Tüm hakları saklıdır.</p>
+</footer>
+
 </body>
 </html>
